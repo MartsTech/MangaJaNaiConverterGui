@@ -632,38 +632,42 @@ def preprocess_worker_archive_file(
                         and resize_width_before_upscale != 0
                     ):
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (resize_width_before_upscale, resize_height_before_upscale),
+                            is_grayscale,
                         )
                     # resize height, keep proportional width
                     elif resize_height_before_upscale != 0:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 round(w * resize_height_before_upscale / h),
                                 resize_height_before_upscale,
+                                is_grayscale,
                             ),
                         )
                     # resize width, keep proportional height
                     elif resize_width_before_upscale != 0:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 resize_width_before_upscale,
                                 round(h * resize_width_before_upscale / w),
                             ),
+                            is_grayscale,
                         )
                     elif resize_factor_before_upscale != 100:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 round(w * resize_factor_before_upscale / 100),
                                 round(h * resize_factor_before_upscale / 100),
                             ),
+                            is_grayscale,
                         )
                     
                     # ensure the resized image dimensions are correctly updated    
@@ -800,41 +804,45 @@ def preprocess_worker_folder(
                             and resize_width_before_upscale != 0
                         ):
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     resize_width_before_upscale,
                                     resize_height_before_upscale,
                                 ),
+                                is_grayscale,
                             )
                         # resize height, keep proportional width
                         elif resize_height_before_upscale != 0:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     round(w * resize_height_before_upscale / h),
                                     resize_height_before_upscale,
                                 ),
+                                is_grayscale,
                             )
                         # resize width, keep proportional height
                         elif resize_width_before_upscale != 0:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     resize_width_before_upscale,
                                     round(h * resize_width_before_upscale / w),
                                 ),
+                                is_grayscale,
                             )
                         elif resize_factor_before_upscale != 100:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     round(w * resize_factor_before_upscale / 100),
                                     round(h * resize_factor_before_upscale / 100),
                                 ),
+                                is_grayscale,
                             )
                             
                         # ensure the resized image dimensions are correctly updated    
@@ -944,37 +952,40 @@ def preprocess_worker_image(
             # resize width and height, distorting image
             if resize_height_before_upscale != 0 and resize_width_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
-                    image, (resize_width_before_upscale, resize_height_before_upscale)
+                image = image_resize(
+                    image, (resize_width_before_upscale, resize_height_before_upscale), is_grayscale,
                 )
             # resize height, keep proportional width
             elif resize_height_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         round(w * resize_height_before_upscale / h),
                         resize_height_before_upscale,
                     ),
+                    is_grayscale,
                 )
             # resize width, keep proportional height
             elif resize_width_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         resize_width_before_upscale,
                         round(h * resize_width_before_upscale / w),
                     ),
+                    is_grayscale,
                 )
             elif resize_factor_before_upscale != 100:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         round(w * resize_factor_before_upscale / 100),
                         round(h * resize_factor_before_upscale / 100),
                     ),
+                    is_grayscale,
                 )
                 
             # ensure the resized image dimensions are correctly updated    
