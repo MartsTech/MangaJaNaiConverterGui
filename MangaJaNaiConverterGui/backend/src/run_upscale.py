@@ -650,6 +650,9 @@ def preprocess_worker_archive_file(
                                 round(h * resize_factor_before_upscale / 100),
                             ),
                         )
+                    
+                    # ensure the resized image dimensions are correctly updated    
+                    original_height, original_width, _ = get_h_w_c(image) 
 
                     if is_grayscale and chain["AutoAdjustLevels"]:
                         image = enhance_contrast(image)
@@ -818,6 +821,9 @@ def preprocess_worker_folder(
                                     round(h * resize_factor_before_upscale / 100),
                                 ),
                             )
+                            
+                        # ensure the resized image dimensions are correctly updated    
+                        original_height, original_width, _ = get_h_w_c(image) 
 
                         if is_grayscale and chain["AutoAdjustLevels"]:
                             image = enhance_contrast(image)
@@ -955,6 +961,9 @@ def preprocess_worker_image(
                         round(h * resize_factor_before_upscale / 100),
                     ),
                 )
+                
+            # ensure the resized image dimensions are correctly updated    
+            original_height, original_width, _ = get_h_w_c(image) 
 
             if is_grayscale and chain["AutoAdjustLevels"]:
                 image = enhance_contrast(image)
