@@ -382,15 +382,22 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
-            needs_squeeze = False
+            is_input_grayscale = False
+            
             if image.ndim == 2:
-                image = np.expand_dims(image, axis=-1)
-                needs_squeeze = True
-                
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                is_input_grayscale = True
+            elif image.ndim == 3 and image.shape[2] == 1:
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                is_input_grayscale = True
+
             result = model.upscale_image(image, overlap=16)
 
-            if needs_squeeze and result.ndim == 3 and result.shape[-1] == 1:
-                result = np.squeeze(result, axis=-1)
+            if is_input_grayscale:
+                if result.ndim == 3 and result.shape[2] == 3:
+                    result = cv2.cvtColor(result, cv2.COLOR_RGB2GRAY)
+                elif result.ndim == 3 and result.shape[2] == 1:
+                    result = np.squeeze(result, axis=-1)
 
             return result
 
