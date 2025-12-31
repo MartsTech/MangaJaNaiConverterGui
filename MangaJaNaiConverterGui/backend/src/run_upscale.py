@@ -695,7 +695,7 @@ def preprocess_worker_archive_file(
                                 engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                                 shape_min=(32, 32),
                                 shape_opt=(512, 512),
-                                shape_max=(1024, 1024),
+                                shape_max=(512, 512),
                                 tile_align=16,
                                 builder_opt_level=3,
                                 trt_workspace_gb=16
@@ -884,7 +884,7 @@ def preprocess_worker_folder(
                                     engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                                     shape_min=(32, 32),
                                     shape_opt=(512, 512),
-                                    shape_max=(1024, 1024),
+                                    shape_max=(512, 512),
                                     tile_align=16,
                                     builder_opt_level=3,
                                     trt_workspace_gb=16
@@ -1048,7 +1048,7 @@ def preprocess_worker_image(
                             engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                             shape_min=(32, 32),
                             shape_opt=(512, 512),
-                            shape_max=(1024, 1024),
+                            shape_max=(512, 512),
                             tile_align=16,
                             builder_opt_level=3,
                             trt_workspace_gb=16
