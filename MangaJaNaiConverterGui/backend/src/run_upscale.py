@@ -382,6 +382,9 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
+            if image.ndim == 2:
+                image = np.expand_dims(image, axis=-1)
+                
             return model.upscale_image(image, overlap=16)
 
         result = upscale_image_node(
