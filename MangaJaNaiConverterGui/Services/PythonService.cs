@@ -242,7 +242,8 @@ namespace MangaJaNaiConverterGui.Services
                             Path.GetExtension(filename).Equals(".pth", StringComparison.CurrentCultureIgnoreCase) ||
                             Path.GetExtension(filename).Equals(".pt", StringComparison.CurrentCultureIgnoreCase) ||
                             Path.GetExtension(filename).Equals(".ckpt", StringComparison.CurrentCultureIgnoreCase) ||
-                            Path.GetExtension(filename).Equals(".safetensors", StringComparison.CurrentCultureIgnoreCase)
+                            Path.GetExtension(filename).Equals(".safetensors", StringComparison.CurrentCultureIgnoreCase) ||
+                            Path.GetExtension(filename).Equals(".onnx", StringComparison.CurrentCultureIgnoreCase)
                         )
                         .Select(filename => Path.GetFileName(filename))
                         .Order().ToList());

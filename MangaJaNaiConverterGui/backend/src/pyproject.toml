@@ -1,5 +1,6 @@
 [project]
 name = "mangajanaiconvertergui"
+requires-python = ">=3.13"
 dynamic = ["version"]
 dependencies = [
   "chainner_ext==0.3.10",
@@ -16,6 +17,11 @@ dependencies = [
   "spandrel==0.4.1",
   "torch==2.9.1",
   "torchvision==0.24.1",
+  "tensorrt-cu12",
+  "cupy-cuda12x",
+  "rich",
+  "requests",
+  "urllib3"
 ]
 authors = [{name = "the-database"}]
 description = "Upscaling manga images and archives with PyTorch models."
