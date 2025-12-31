@@ -389,7 +389,7 @@ def ai_upscale_image(
                 
             result = model.upscale_image(image, overlap=16)
 
-            if needs_squeeze and result.ndim == 3:
+            if needs_squeeze and result.ndim == 3 and result.shape[-1] == 1:
                 result = np.squeeze(result, axis=-1)
 
             return result
