@@ -385,6 +385,11 @@ def ai_upscale_image(
             if image.dtype == np.float32 or image.dtype == np.float64:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
+            if image.ndim == 2:
+                image = np.expand_dims(image, axis=2)
+
+            image = np.ascontiguousarray(image)
+
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
