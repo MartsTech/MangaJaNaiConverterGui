@@ -382,6 +382,9 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
+            if image.dtype == np.float32 or image.dtype == np.float64:
+                image = (image * 255.0).clip(0, 255).astype(np.uint8)
+
             is_input_grayscale = False
             
             if image.ndim == 2:
@@ -398,6 +401,9 @@ def ai_upscale_image(
                     result = cv2.cvtColor(result, cv2.COLOR_RGB2GRAY)
                 elif result.ndim == 3 and result.shape[2] == 1:
                     result = np.squeeze(result, axis=-1)
+            
+            if result.dtype == np.uint8:
+                result = result.astype(np.float32) / 255.0
 
             return result
 
