@@ -689,7 +689,7 @@ def preprocess_worker_archive_file(
                                 onnx_path=model_abs_path,
                                 batch_size=1,
                                 use_fp16=False,
-                                use_bf16=True,
+                                use_bf16=False,
                                 use_strong_types=True,
                                 device_id=settings_parser.get_int("accelerator_device_index", 0),
                                 engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
@@ -697,8 +697,8 @@ def preprocess_worker_archive_file(
                                 shape_opt=(512, 512),
                                 shape_max=(1024, 1024),
                                 tile_align=16,
-                                builder_opt_level=3,
-                                trt_workspace_gb=4
+                                builder_opt_level=5,
+                                trt_workspace_gb=20
                             )
                         else:
                             model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -878,7 +878,7 @@ def preprocess_worker_folder(
                                     onnx_path=model_abs_path,
                                     batch_size=1,
                                     use_fp16=False,
-                                    use_bf16=True,
+                                    use_bf16=False,
                                     use_strong_types=True,
                                     device_id=settings_parser.get_int("accelerator_device_index", 0),
                                     engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
@@ -886,8 +886,8 @@ def preprocess_worker_folder(
                                     shape_opt=(512, 512),
                                     shape_max=(1024, 1024),
                                     tile_align=16,
-                                    builder_opt_level=3,
-                                    trt_workspace_gb=4
+                                    builder_opt_level=5,
+                                    trt_workspace_gb=20
                                 )
                             else:
                                 model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -1042,7 +1042,7 @@ def preprocess_worker_image(
                             onnx_path=model_abs_path,
                             batch_size=1,
                             use_fp16=False,
-                            use_bf16=True,
+                            use_bf16=False,
                             use_strong_types=True,
                             device_id=settings_parser.get_int("accelerator_device_index", 0),
                             engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
@@ -1050,8 +1050,8 @@ def preprocess_worker_image(
                             shape_opt=(512, 512),
                             shape_max=(1024, 1024),
                             tile_align=16,
-                            builder_opt_level=3,
-                            trt_workspace_gb=4
+                            builder_opt_level=5,
+                            trt_workspace_gb=20
                         )
                     else:
                         model, _, _ = load_model_node(context, Path(model_abs_path))
