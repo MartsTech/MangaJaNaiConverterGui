@@ -1611,7 +1611,7 @@ system_codepage = get_system_codepage()
 
 settings_parser = SettingsParser(
     {
-        "use_cpu": settings["SelectedDeviceIndex"] == 0,
+        "use_cpu": False,
         "use_fp16": settings["UseFp16"],
         "accelerator_device_index": settings["SelectedDeviceIndex"],
         "budget_limit": 0,
