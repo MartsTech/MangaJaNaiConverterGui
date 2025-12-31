@@ -697,8 +697,8 @@ def preprocess_worker_archive_file(
                                 shape_opt=(512, 512),
                                 shape_max=(1024, 1024),
                                 tile_align=16,
-                                builder_opt_level=5,
-                                trt_workspace_gb=20
+                                builder_opt_level=3,
+                                trt_workspace_gb=16
                             )
                         else:
                             model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -886,8 +886,8 @@ def preprocess_worker_folder(
                                     shape_opt=(512, 512),
                                     shape_max=(1024, 1024),
                                     tile_align=16,
-                                    builder_opt_level=5,
-                                    trt_workspace_gb=20
+                                    builder_opt_level=3,
+                                    trt_workspace_gb=16
                                 )
                             else:
                                 model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -1050,8 +1050,8 @@ def preprocess_worker_image(
                             shape_opt=(512, 512),
                             shape_max=(1024, 1024),
                             tile_align=16,
-                            builder_opt_level=5,
-                            trt_workspace_gb=20
+                            builder_opt_level=3,
+                            trt_workspace_gb=16
                         )
                     else:
                         model, _, _ = load_model_node(context, Path(model_abs_path))
