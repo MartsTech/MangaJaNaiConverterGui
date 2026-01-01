@@ -385,15 +385,19 @@ def ai_upscale_image(
             if image.dtype == np.float32 or image.dtype == np.float64:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
-            if image.ndim == 2:
+            needs_squeeze = (image.ndim == 2)
+
+            if needs_squeeze:
                 image = np.expand_dims(image, axis=2)
 
             image = np.ascontiguousarray(image)
-
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
                 result = result.astype(np.float32) / 255.0
+        
+            if needs_squeeze and result.ndim == 3:
+                result = np.squeeze(result, axis=2)
 
             return result
 
