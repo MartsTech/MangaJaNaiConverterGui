@@ -374,31 +374,31 @@ class TensorRTUpscaler:
             shape_max=self.shape_max,
         )
         num_tiles = len(tiles)
-        # Only log if debugging is needed to reduce console noise
-        # dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles, Batch Size: {self.batch_size}")
+
+        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles")
 
         img_float = img.astype(np.float32) / 255.0
 
-        # --- OPTIMIZATION: Fast Path for Single Tile ---
-        # Prevents allocating massive output buffers for images that don't need stitching
+        # single tile
         if num_tiles == 1:
             tile_info = tiles[0]
             infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
 
             tile_data = self._extract_tile(img_float, tile_info)
 
-            # Use batch size of 1 for this specific case
-            input_buf = cp.empty((1, 3, infer_h, infer_w), dtype=self.input_cp_dtype)
-            
-            if self.is_dynamic:
-                 self._set_input_shape(infer_h, infer_w)
-            
-            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
-
-            output_buf = cp.empty(
-                (1, 3, infer_h * self.scale, infer_w * self.scale), 
-                dtype=self.output_cp_dtype
+            input_buf = cp.empty(
+                (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
             )
+            buf_out_h = infer_h * self.scale
+            buf_out_w = infer_w * self.scale
+            output_buf = cp.empty(
+                (self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype
+            )
+
+            if self.is_dynamic:
+                self._set_input_shape(infer_h, infer_w)
+
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
 
             self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
             self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
@@ -408,71 +408,54 @@ class TensorRTUpscaler:
             result_chw = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
             result = result_chw.transpose(1, 2, 0)
 
-            # Crop padding if necessary
             if tile_info.pad_bottom > 0:
-                result = result[:-tile_info.pad_bottom * self.scale, :, :]
+                result = result[: -tile_info.pad_bottom * self.scale, :, :]
             if tile_info.pad_right > 0:
-                result = result[:, :-tile_info.pad_right * self.scale, :]
+                result = result[:, : -tile_info.pad_right * self.scale, :]
 
             return np.clip(result * 255.0, 0, 255).astype(np.uint8)
 
-        # --- Standard Path: Multi-Tile Batching ---
+        # multi tile
         output = np.zeros((out_h, out_w, 3), dtype=np.float32)
         weight_sum = np.zeros((out_h, out_w, 1), dtype=np.float32)
+
         blend_masks: dict = {}
 
-        # We cannot just slice the list because tile sizes might vary (edges).
-        # We must group tiles that share the same shape.
-        batch = []
-        
-        def process_current_batch(current_batch):
-            if not current_batch: return
-            
-            b_size = len(current_batch)
-            infer_h, infer_w = current_batch[0].infer_h, current_batch[0].infer_w
-            
-            # Allocate buffers
-            input_buf = cp.empty((b_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype)
-            
-            # Fill Input
-            for idx, t_info in enumerate(current_batch):
-                tile_data = self._extract_tile(img_float, t_info)
-                input_buf[idx] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+        input_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
+        output_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
 
-            # Execute
-            if self.is_dynamic or b_size != self.batch_size:
-                 self.context.set_input_shape(self.input_name, (b_size, 3, infer_h, infer_w))
+        for _tile_idx, tile_info in enumerate(tiles):
+            tile_data = self._extract_tile(img_float, tile_info)
+            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
+            shape_key = (infer_h, infer_w)
 
-            out_buf_h, out_buf_w = infer_h * self.scale, infer_w * self.scale
-            output_buf = cp.empty(
-                (b_size, 3, out_buf_h, out_buf_w), dtype=self.output_cp_dtype
-            )
-            
+            if shape_key not in input_buffer_cache:
+                input_buffer_cache[shape_key] = cp.empty(
+                    (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
+                )
+                buf_out_h = infer_h * self.scale
+                buf_out_w = infer_w * self.scale
+                output_buffer_cache[shape_key] = cp.empty(
+                    (self.batch_size, 3, buf_out_h, buf_out_w),
+                    dtype=self.output_cp_dtype,
+                )
+
+            input_buf = input_buffer_cache[shape_key]
+            output_buf = output_buffer_cache[shape_key]
+
+            if self.is_dynamic:
+                self._set_input_shape(infer_h, infer_w)
+
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+
             self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
             self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
             self.context.execute_async_v3(self.stream.ptr)
             self.stream.synchronize()
-            
-            # Accumulate
-            batch_results = cp.asnumpy(output_buf).astype(np.float32, copy=False)
-            for idx, t_info in enumerate(current_batch):
-                self._accumulate_tile(batch_results[idx], t_info, output, weight_sum, blend_masks)
 
-        # Iterate and group tiles
-        for tile_info in tiles:
-            # Check 1: Is batch full?
-            # Check 2: Does this tile differ in size from the current batch?
-            if batch and (len(batch) >= self.batch_size or 
-                          batch[0].infer_h != tile_info.infer_h or 
-                          batch[0].infer_w != tile_info.infer_w):
-                process_current_batch(batch)
-                batch = []
+            result = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
 
-            batch.append(tile_info)
-
-        # Process any leftovers
-        if batch:
-            process_current_batch(batch)
+            self._accumulate_tile(result, tile_info, output, weight_sum, blend_masks)
 
         weight_sum = np.maximum(weight_sum, 1e-8)
         output = output / weight_sum
