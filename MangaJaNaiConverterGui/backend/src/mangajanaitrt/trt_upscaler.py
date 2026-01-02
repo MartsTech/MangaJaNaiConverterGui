@@ -374,88 +374,83 @@ class TensorRTUpscaler:
             shape_max=self.shape_max,
         )
         num_tiles = len(tiles)
+        
+        # Determine fixed tile size (Crucial for batching)
+        # Since you set min=opt=max=512, all tiles will be 512x512
+        tile_h, tile_w = self.shape_opt 
 
-        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles")
+        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles (Batching: {self.batch_size})")
 
         img_float = img.astype(np.float32) / 255.0
-
-        # single tile
-        if num_tiles == 1:
-            tile_info = tiles[0]
-            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
-
-            tile_data = self._extract_tile(img_float, tile_info)
-
-            input_buf = cp.empty(
-                (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
-            )
-            buf_out_h = infer_h * self.scale
-            buf_out_w = infer_w * self.scale
-            output_buf = cp.empty(
-                (self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype
-            )
-
-            if self.is_dynamic:
-                self._set_input_shape(infer_h, infer_w)
-
-            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
-
-            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-            self.context.execute_async_v3(self.stream.ptr)
-            self.stream.synchronize()
-
-            result_chw = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
-            result = result_chw.transpose(1, 2, 0)
-
-            if tile_info.pad_bottom > 0:
-                result = result[: -tile_info.pad_bottom * self.scale, :, :]
-            if tile_info.pad_right > 0:
-                result = result[:, : -tile_info.pad_right * self.scale, :]
-
-            return np.clip(result * 255.0, 0, 255).astype(np.uint8)
-
-        # multi tile
+        
+        # Prepare Output Canvas
         output = np.zeros((out_h, out_w, 3), dtype=np.float32)
         weight_sum = np.zeros((out_h, out_w, 1), dtype=np.float32)
-
         blend_masks: dict = {}
 
-        input_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
-        output_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
+        # Prepare GPU Buffers (Allocated once)
+        # We assume static shape for batching efficiency here
+        input_buf = cp.empty((self.batch_size, 3, tile_h, tile_w), dtype=self.input_cp_dtype)
+        
+        buf_out_h = tile_h * self.scale
+        buf_out_w = tile_w * self.scale
+        output_buf = cp.empty((self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype)
 
-        for _tile_idx, tile_info in enumerate(tiles):
+        # Ensure context input shape is set (if dynamic engine)
+        if self.is_dynamic:
+             self._set_input_shape(tile_h, tile_w)
+        
+        # Bind addresses once
+        self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+        self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+
+        # --- BATCHING LOOP ---
+        batch_tiles = []
+        batch_indices = []
+
+        for i, tile_info in enumerate(tiles):
+            # 1. Collect tile data
             tile_data = self._extract_tile(img_float, tile_info)
-            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
-            shape_key = (infer_h, infer_w)
+            batch_tiles.append(tile_data)
+            batch_indices.append(tile_info)
 
-            if shape_key not in input_buffer_cache:
-                input_buffer_cache[shape_key] = cp.empty(
-                    (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
-                )
-                buf_out_h = infer_h * self.scale
-                buf_out_w = infer_w * self.scale
-                output_buffer_cache[shape_key] = cp.empty(
-                    (self.batch_size, 3, buf_out_h, buf_out_w),
-                    dtype=self.output_cp_dtype,
-                )
+            # 2. If batch is full OR this is the very last tile
+            if len(batch_tiles) == self.batch_size or i == num_tiles - 1:
+                
+                current_batch_size = len(batch_tiles)
+                
+                # Fill input buffer
+                # Stack numpy arrays -> transfer to CuPy
+                # Note: This copy is usually faster than copying one by one
+                batch_arr = np.stack(batch_tiles)
+                
+                # If we are at the end and possess fewer tiles than batch_size, 
+                # we just write to the first N slots. TRT handles the rest (garbage data)
+                # or we can rely on min_shape=(1,...) definition.
+                input_buf[:current_batch_size] = cp.asarray(batch_arr, dtype=self.input_cp_dtype)
 
-            input_buf = input_buffer_cache[shape_key]
-            output_buf = output_buffer_cache[shape_key]
+                # 3. Execute Inference
+                self.context.execute_async_v3(self.stream.ptr)
+                self.stream.synchronize()
 
-            if self.is_dynamic:
-                self._set_input_shape(infer_h, infer_w)
+                # 4. Retrieve Results
+                # Only take the valid number of outputs back to CPU
+                result_batch_cp = output_buf[:current_batch_size]
+                result_batch_np = cp.asnumpy(result_batch_cp).astype(np.float32, copy=False)
 
-            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+                # 5. Accumulate results
+                for b_idx, result_chw in enumerate(result_batch_np):
+                    self._accumulate_tile(
+                        result_chw, 
+                        batch_indices[b_idx], 
+                        output, 
+                        weight_sum, 
+                        blend_masks
+                    )
 
-            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-            self.context.execute_async_v3(self.stream.ptr)
-            self.stream.synchronize()
-
-            result = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
-
-            self._accumulate_tile(result, tile_info, output, weight_sum, blend_masks)
+                # Reset batch
+                batch_tiles = []
+                batch_indices = []
 
         weight_sum = np.maximum(weight_sum, 1e-8)
         output = output / weight_sum
