@@ -704,7 +704,7 @@ def preprocess_worker_archive_file(
                             print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                             model = TensorRTUpscaler(
                                 onnx_path=model_abs_path,
-                                batch_size=1,
+                                batch_size=4,
                                 use_fp16=False,
                                 use_bf16=True,
                                 use_strong_types=False,
@@ -893,7 +893,7 @@ def preprocess_worker_folder(
                                 print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                                 model = TensorRTUpscaler(
                                     onnx_path=model_abs_path,
-                                    batch_size=1,
+                                    batch_size=4,
                                     use_fp16=False,
                                     use_bf16=True,
                                     use_strong_types=False,
@@ -1057,7 +1057,7 @@ def preprocess_worker_image(
                         print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                         model = TensorRTUpscaler(
                             onnx_path=model_abs_path,
-                            batch_size=1,
+                            batch_size=4,
                             use_fp16=False,
                             use_bf16=True,
                             use_strong_types=False,
