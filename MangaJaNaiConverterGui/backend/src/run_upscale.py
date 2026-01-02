@@ -388,6 +388,7 @@ def ai_upscale_image(
             if image.ndim == 2:
                 image = np.expand_dims(image, axis=2)
 
+            image = np.ascontiguousarray(image)
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
