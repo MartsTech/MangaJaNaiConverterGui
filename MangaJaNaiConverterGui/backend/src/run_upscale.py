@@ -29,6 +29,7 @@ from spandrel import ImageModelDescriptor, ModelDescriptor
 
 sys.path.append(os.path.normpath(os.path.dirname(os.path.abspath(__file__))))
 
+from mangajanaitrt.trt_upscaler import TensorRTUpscaler
 import spandrel_custom
 from nodes.impl.image_utils import normalize, to_uint8, to_uint16
 from nodes.impl.upscale.auto_split_tiles import (
@@ -377,9 +378,28 @@ def should_chain_activate_for_image(
 
 
 def ai_upscale_image(
-    image: np.ndarray, model_tile_size: TileSize, model: ImageModelDescriptor | None
+    image: np.ndarray, model_tile_size: TileSize, model: ImageModelDescriptor | Any | None
 ) -> np.ndarray:
     if model is not None:
+        if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
+            if image.dtype == np.float32 or image.dtype == np.float64:
+                image = (image * 255.0).clip(0, 255).astype(np.uint8)
+
+            if image.ndim == 2:
+                image = np.expand_dims(image, axis=2)
+
+            result = model.upscale_image(image, overlap=16)
+
+            if result.dtype == np.uint8:
+                result = result.astype(np.float32) / 255.0
+            
+            _, _, c = get_h_w_c(result)
+
+            if c == 1 and result.ndim == 3:
+                result = np.squeeze(result, axis=-1)
+
+            return result
+
         result = upscale_image_node(
             context,
             image,
@@ -678,9 +698,26 @@ def preprocess_worker_archive_file(
 
                     if model_abs_path in loaded_models:
                         model = loaded_models[model_abs_path]
-
                     elif os.path.exists(model_abs_path):
-                        model, _, _ = load_model_node(context, Path(model_abs_path))
+                        if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
+                            print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                            model = TensorRTUpscaler(
+                                onnx_path=model_abs_path,
+                                batch_size=1,
+                                use_fp16=False,
+                                use_bf16=True,
+                                use_strong_types=False,
+                                device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                shape_min=(32, 32),
+                                shape_opt=(512, 512),
+                                shape_max=(512, 512),
+                                tile_align=16,
+                                builder_opt_level=3,
+                                trt_workspace_gb=16
+                            )
+                        else:
+                            model, _, _ = load_model_node(context, Path(model_abs_path))
                         loaded_models[model_abs_path] = model
 
                     tile_size_str = chain["ModelTileSize"]
@@ -851,7 +888,25 @@ def preprocess_worker_folder(
                             model = loaded_models[model_abs_path]
 
                         elif os.path.exists(model_abs_path):
-                            model, _, _ = load_model_node(context, Path(model_abs_path))
+                            if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
+                                print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                                model = TensorRTUpscaler(
+                                    onnx_path=model_abs_path,
+                                    batch_size=1,
+                                    use_fp16=False,
+                                    use_bf16=True,
+                                    use_strong_types=False,
+                                    device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                    engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                    shape_min=(32, 32),
+                                    shape_opt=(512, 512),
+                                    shape_max=(512, 512),
+                                    tile_align=16,
+                                    builder_opt_level=3,
+                                    trt_workspace_gb=16
+                                )
+                            else:
+                                model, _, _ = load_model_node(context, Path(model_abs_path))
                             loaded_models[model_abs_path] = model
                         tile_size_str = chain["ModelTileSize"]
                     else:
@@ -997,7 +1052,25 @@ def preprocess_worker_image(
                     model = loaded_models[model_abs_path]
 
                 elif os.path.exists(model_abs_path):
-                    model, _, _ = load_model_node(context, Path(model_abs_path))
+                    if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
+                        print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                        model = TensorRTUpscaler(
+                            onnx_path=model_abs_path,
+                            batch_size=1,
+                            use_fp16=False,
+                            use_bf16=True,
+                            use_strong_types=False,
+                            device_id=settings_parser.get_int("accelerator_device_index", 0),
+                            engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                            shape_min=(32, 32),
+                            shape_opt=(512, 512),
+                            shape_max=(512, 512),
+                            tile_align=16,
+                            builder_opt_level=3,
+                            trt_workspace_gb=16
+                        )
+                    else:
+                        model, _, _ = load_model_node(context, Path(model_abs_path))
                     loaded_models[model_abs_path] = model
                 tile_size_str = chain["ModelTileSize"]
         else:
@@ -1554,7 +1627,7 @@ system_codepage = get_system_codepage()
 
 settings_parser = SettingsParser(
     {
-        "use_cpu": settings["SelectedDeviceIndex"] == 0,
+        "use_cpu": False,
         "use_fp16": settings["UseFp16"],
         "accelerator_device_index": settings["SelectedDeviceIndex"],
         "budget_limit": 0,
