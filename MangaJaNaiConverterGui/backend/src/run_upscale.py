@@ -388,14 +388,17 @@ def ai_upscale_image(
             if image.ndim == 2:
                 image = np.expand_dims(image, axis=2)
 
+            image = image[..., ::-1]
             image = np.ascontiguousarray(image)
+
             result = model.upscale_image(image, overlap=16)
+
+            result = result[..., ::-1]
 
             if result.dtype == np.uint8:
                 result = result.astype(np.float32) / 255.0
-            
-            _, _, c = get_h_w_c(result)
 
+            _, _, c = get_h_w_c(result)
             if c == 1 and result.ndim == 3:
                 result = np.squeeze(result, axis=-1)
 
