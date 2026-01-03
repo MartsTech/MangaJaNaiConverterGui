@@ -382,50 +382,26 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
-            # --- DIAGNOSTIC PROOF START ---
             print(f"DEBUG: Input Shape: {image.shape}", flush=True)
             print(f"DEBUG: Input Dtype: {image.dtype}", flush=True)
             
-            # Check for CHW (Channels-First) mismatch
-            # If the first dimension is 3 (RGB) and the last dimension is large (Width), 
-            # the image is in CHW format, but TensorRTUpscaler expects HWC.
             if image.ndim == 3 and image.shape[0] == 3 and image.shape[2] > 100:
-                print("CRITICAL WARNING: Image appears to be in CHW (Channels, Height, Width) format.", flush=True)
-                print("TensorRTUpscaler expects HWC. This WILL cause scrambling.", flush=True)
-                
-                # Auto-fix for the proof
+                print("CRITICAL WARNING: Image appears to be in CHW format. TensorRTUpscaler expects HWC.", flush=True)
                 print("DEBUG: Attempting Auto-Fix (Transpose CHW -> HWC)...", flush=True)
                 image = image.transpose(1, 2, 0)
                 print(f"DEBUG: New Shape: {image.shape}", flush=True)
 
-            # Check for Contiguity
             if not image.flags['C_CONTIGUOUS']:
                 print("WARNING: Image memory is not contiguous. This causes 'shearing' artifacts.", flush=True)
-            
-            # Save the pre-processed image to verify what the model actually receives
-            try:
-                debug_img = (image * 255).clip(0, 255).astype(np.uint8)
-                if debug_img.shape[2] == 3: # RGB
-                    # Convert RGB to BGR for cv2 save
-                    cv2.imwrite("DEBUG_PRE_INFERENCE.jpg", debug_img[..., ::-1])
-                else:
-                    cv2.imwrite("DEBUG_PRE_INFERENCE.jpg", debug_img)
-                print("DEBUG: Saved 'DEBUG_PRE_INFERENCE.jpg'. Check this file.", flush=True)
-            except Exception as e:
-                print(f"DEBUG: Could not save debug image: {e}", flush=True)
-            # --- DIAGNOSTIC PROOF END ---
 
-            # Standard Logic (Cleaned up based on previous fixes)
             if image.dtype != np.uint8:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
             if image.ndim == 2:
                 image = np.expand_dims(image, axis=2)
 
-            # FORCE CONTIGUOUS - Critical for C++ bindings
             image = np.ascontiguousarray(image)
 
-            # Execute
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
@@ -437,7 +413,6 @@ def ai_upscale_image(
 
             return result
 
-        # Fallback path
         result = upscale_image_node(
             context,
             image,
