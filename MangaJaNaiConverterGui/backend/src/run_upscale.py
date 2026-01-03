@@ -382,18 +382,21 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
-            if image.dtype == np.float32 or image.dtype == np.float64:
+            if image.ndim == 3 and image.shape[0] in [1, 3, 4] and image.shape[1] > 8:
+                image = image.transpose(1, 2, 0)
+
+            h, w, c = image.shape
+            if c == 1:
+                image = np.repeat(image, 3, axis=2)
+            elif c == 4:
+                image = image[:, :, :3]
+
+            if image.dtype != np.uint8:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
-            if image.ndim == 2:
-                image = np.expand_dims(image, axis=2)
-
-            image = image[..., ::-1]
             image = np.ascontiguousarray(image)
 
             result = model.upscale_image(image, overlap=16)
-
-            result = result[..., ::-1]
 
             if result.dtype == np.uint8:
                 result = result.astype(np.float32) / 255.0
