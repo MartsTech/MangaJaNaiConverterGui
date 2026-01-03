@@ -710,7 +710,7 @@ def preprocess_worker_archive_file(
                                 use_strong_types=False,
                                 device_id=settings_parser.get_int("accelerator_device_index", 0),
                                 engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                shape_min=(512, 512),
+                                shape_min=(32, 32),
                                 shape_opt=(512, 512),
                                 shape_max=(512, 512),
                                 tile_align=16,
@@ -725,7 +725,7 @@ def preprocess_worker_archive_file(
                 else:
                     image = normalize(image)
 
-                image = np.ascontiguousarray(image)
+                # image = np.ascontiguousarray(image)
                 upscale_queue.put(
                     (
                         image,
@@ -899,7 +899,7 @@ def preprocess_worker_folder(
                                     use_strong_types=False,
                                     device_id=settings_parser.get_int("accelerator_device_index", 0),
                                     engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                    shape_min=(512, 512),
+                                    shape_min=(32, 32),
                                     shape_opt=(512, 512),
                                     shape_max=(512, 512),
                                     tile_align=16,
@@ -913,7 +913,7 @@ def preprocess_worker_folder(
                     else:
                         image = normalize(image)
 
-                    image = np.ascontiguousarray(image)
+                    # image = np.ascontiguousarray(image)
 
                     upscale_queue.put(
                         (
@@ -1063,7 +1063,7 @@ def preprocess_worker_image(
                             use_strong_types=False,
                             device_id=settings_parser.get_int("accelerator_device_index", 0),
                             engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                            shape_min=(512, 512),
+                            shape_min=(32, 32),
                             shape_opt=(512, 512),
                             shape_max=(512, 512),
                             tile_align=16,
@@ -1078,7 +1078,7 @@ def preprocess_worker_image(
             print("No chain!!!!!!!")
             image = normalize(image)
 
-        image = np.ascontiguousarray(image)
+        # image = np.ascontiguousarray(image)
 
         upscale_queue.put(
             (
