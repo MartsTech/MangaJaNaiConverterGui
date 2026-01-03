@@ -389,7 +389,6 @@ class TensorRTUpscaler:
             first_tile = batch_list[0]
             infer_h, infer_w = first_tile.infer_h, first_tile.infer_w
             shape_key = (infer_h, infer_w)
-            current_batch_size = len(batch_list)
 
             if shape_key not in input_buffer_cache:
                 input_buffer_cache[shape_key] = cp.empty(
@@ -408,13 +407,16 @@ class TensorRTUpscaler:
             if self.is_dynamic:
                 self._set_input_shape(infer_h, infer_w)
 
-            for i, tile_info in enumerate(batch_list):
-                tile_data = self._extract_tile(img_float, tile_info)
-                input_buf[i] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+            with self.stream:
+                for i, tile_info in enumerate(batch_list):
+                    tile_data = self._extract_tile(img_float, tile_info)
+                    input_buf[i] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
 
-            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-            self.context.execute_async_v3(self.stream.ptr)
+                self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+                self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+                
+                self.context.execute_async_v3(self.stream.ptr)
+
             self.stream.synchronize()
 
             for i, tile_info in enumerate(batch_list):
