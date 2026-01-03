@@ -382,26 +382,12 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
-            print(f"DEBUG: Input Shape: {image.shape}", flush=True)
-            print(f"DEBUG: Input Dtype: {image.dtype}", flush=True)
-            
-            if image.ndim == 3 and image.shape[0] == 3 and image.shape[2] > 100:
-                print("CRITICAL WARNING: Image appears to be in CHW format. TensorRTUpscaler expects HWC.", flush=True)
-                print("DEBUG: Attempting Auto-Fix (Transpose CHW -> HWC)...", flush=True)
-                image = image.transpose(1, 2, 0)
-                print(f"DEBUG: New Shape: {image.shape}", flush=True)
-
-            if not image.flags['C_CONTIGUOUS']:
-                print("WARNING: Image memory is not contiguous. This causes 'shearing' artifacts.", flush=True)
-
             if image.dtype != np.uint8:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
             if image.ndim == 2:
                 image = np.expand_dims(image, axis=2)
-
-            image = np.ascontiguousarray(image)
-
+            
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
