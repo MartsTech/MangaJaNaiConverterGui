@@ -347,7 +347,7 @@ class TensorRTUpscaler:
             )
 
         # HWC -> CHW
-        return tile.transpose(2, 0, 1)
+        return np.ascontiguousarray(tile.transpose(2, 0, 1))
 
     def _set_input_shape(self, h: int, w: int) -> None:
         if (h, w) == self._current_shape:
