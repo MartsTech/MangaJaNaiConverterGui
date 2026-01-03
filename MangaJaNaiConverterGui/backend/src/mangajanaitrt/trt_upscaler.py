@@ -373,21 +373,60 @@ class TensorRTUpscaler:
             shape_opt=self.shape_opt,
             shape_max=self.shape_max,
         )
-        
+        num_tiles = len(tiles)
+
+        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles")
+
+        img_float = img.astype(np.float32) / 255.0
+
+        # single tile
+        if num_tiles == 1:
+            tile_info = tiles[0]
+            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
+
+            tile_data = self._extract_tile(img_float, tile_info)
+
+            input_buf = cp.empty(
+                (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
+            )
+            buf_out_h = infer_h * self.scale
+            buf_out_w = infer_w * self.scale
+            output_buf = cp.empty(
+                (self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype
+            )
+
+            if self.is_dynamic:
+                self._set_input_shape(infer_h, infer_w)
+
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+
+            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+            self.context.execute_async_v3(self.stream.ptr)
+            self.stream.synchronize()
+
+            result_chw = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
+            result = result_chw.transpose(1, 2, 0)
+
+            if tile_info.pad_bottom > 0:
+                result = result[: -tile_info.pad_bottom * self.scale, :, :]
+            if tile_info.pad_right > 0:
+                result = result[:, : -tile_info.pad_right * self.scale, :]
+
+            return np.clip(result * 255.0, 0, 255).astype(np.uint8)
+
+        # multi tile
         output = np.zeros((out_h, out_w, 3), dtype=np.float32)
         weight_sum = np.zeros((out_h, out_w, 1), dtype=np.float32)
+
         blend_masks: dict = {}
-        
-        img_float = img.astype(np.float32) / 255.0
-        
+
         input_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
         output_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
 
-        def process_batch(batch_list):
-            if not batch_list: return
-            
-            first_tile = batch_list[0]
-            infer_h, infer_w = first_tile.infer_h, first_tile.infer_w
+        for _tile_idx, tile_info in enumerate(tiles):
+            tile_data = self._extract_tile(img_float, tile_info)
+            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
             shape_key = (infer_h, infer_w)
 
             if shape_key not in input_buffer_cache:
@@ -407,37 +446,16 @@ class TensorRTUpscaler:
             if self.is_dynamic:
                 self._set_input_shape(infer_h, infer_w)
 
-            with self.stream:
-                for i, tile_info in enumerate(batch_list):
-                    tile_data = self._extract_tile(img_float, tile_info)
-                    input_buf[i] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
 
-                self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-                self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-                
-                self.context.execute_async_v3(self.stream.ptr)
-
+            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+            self.context.execute_async_v3(self.stream.ptr)
             self.stream.synchronize()
 
-            for i, tile_info in enumerate(batch_list):
-                result = cp.asnumpy(output_buf[i]).astype(np.float32, copy=False)
-                self._accumulate_tile(result, tile_info, output, weight_sum, blend_masks)
+            result = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
 
-        current_batch = []
-        current_shape = None
-
-        for tile_info in tiles:
-            tile_shape = (tile_info.infer_h, tile_info.infer_w)
-            
-            if (current_shape is not None and current_shape != tile_shape) or \
-               (len(current_batch) >= self.batch_size):
-                process_batch(current_batch)
-                current_batch = []
-            
-            current_shape = tile_shape
-            current_batch.append(tile_info)
-            
-        process_batch(current_batch)
+            self._accumulate_tile(result, tile_info, output, weight_sum, blend_masks)
 
         weight_sum = np.maximum(weight_sum, 1e-8)
         output = output / weight_sum
