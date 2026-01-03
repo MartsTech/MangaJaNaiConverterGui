@@ -704,7 +704,7 @@ def preprocess_worker_archive_file(
                             print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                             model = TensorRTUpscaler(
                                 onnx_path=model_abs_path,
-                                batch_size=3,
+                                batch_size=4,
                                 use_fp16=False,
                                 use_bf16=True,
                                 use_strong_types=False,
@@ -715,7 +715,7 @@ def preprocess_worker_archive_file(
                                 shape_max=(512, 512),
                                 tile_align=16,
                                 builder_opt_level=3,
-                                trt_workspace_gb=20
+                                trt_workspace_gb=22
                             )
                         else:
                             model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -725,7 +725,7 @@ def preprocess_worker_archive_file(
                 else:
                     image = normalize(image)
 
-                # image = np.ascontiguousarray(image)
+                image = np.ascontiguousarray(image)
                 upscale_queue.put(
                     (
                         image,
@@ -893,7 +893,7 @@ def preprocess_worker_folder(
                                 print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                                 model = TensorRTUpscaler(
                                     onnx_path=model_abs_path,
-                                    batch_size=3,
+                                    batch_size=4,
                                     use_fp16=False,
                                     use_bf16=True,
                                     use_strong_types=False,
@@ -904,7 +904,7 @@ def preprocess_worker_folder(
                                     shape_max=(512, 512),
                                     tile_align=16,
                                     builder_opt_level=3,
-                                    trt_workspace_gb=20
+                                    trt_workspace_gb=22
                                 )
                             else:
                                 model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -913,7 +913,7 @@ def preprocess_worker_folder(
                     else:
                         image = normalize(image)
 
-                    # image = np.ascontiguousarray(image)
+                    image = np.ascontiguousarray(image)
 
                     upscale_queue.put(
                         (
@@ -1057,7 +1057,7 @@ def preprocess_worker_image(
                         print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                         model = TensorRTUpscaler(
                             onnx_path=model_abs_path,
-                            batch_size=3,
+                            batch_size=4,
                             use_fp16=False,
                             use_bf16=True,
                             use_strong_types=False,
@@ -1068,7 +1068,7 @@ def preprocess_worker_image(
                             shape_max=(512, 512),
                             tile_align=16,
                             builder_opt_level=3,
-                            trt_workspace_gb=20
+                            trt_workspace_gb=22
                         )
                     else:
                         model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -1078,7 +1078,7 @@ def preprocess_worker_image(
             print("No chain!!!!!!!")
             image = normalize(image)
 
-        # image = np.ascontiguousarray(image)
+        image = np.ascontiguousarray(image)
 
         upscale_queue.put(
             (
