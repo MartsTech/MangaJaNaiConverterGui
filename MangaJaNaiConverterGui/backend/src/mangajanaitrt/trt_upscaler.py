@@ -346,6 +346,9 @@ class TensorRTUpscaler:
                 mode="reflect",
             )
 
+        if tile.shape[2] == 1:
+            tile = np.repeat(tile, 3, axis=2)
+
         # HWC -> CHW
         return np.ascontiguousarray(tile.transpose(2, 0, 1))
 
