@@ -702,18 +702,18 @@ def preprocess_worker_archive_file(
                             print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                             model = TensorRTUpscaler(
                                 onnx_path=model_abs_path,
-                                batch_size=1,
+                                batch_size=4,
                                 use_fp16=False,
                                 use_bf16=True,
                                 use_strong_types=False,
                                 device_id=settings_parser.get_int("accelerator_device_index", 0),
                                 engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                shape_min=(32, 32),
+                                shape_min=(512, 512),
                                 shape_opt=(512, 512),
                                 shape_max=(512, 512),
                                 tile_align=16,
                                 builder_opt_level=3,
-                                trt_workspace_gb=20
+                                trt_workspace_gb=24
                             )
                         else:
                             model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -891,18 +891,18 @@ def preprocess_worker_folder(
                                 print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                                 model = TensorRTUpscaler(
                                     onnx_path=model_abs_path,
-                                    batch_size=1,
+                                    batch_size=4,
                                     use_fp16=False,
                                     use_bf16=True,
                                     use_strong_types=False,
                                     device_id=settings_parser.get_int("accelerator_device_index", 0),
                                     engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                    shape_min=(32, 32),
+                                    shape_min=(512, 512),
                                     shape_opt=(512, 512),
                                     shape_max=(512, 512),
                                     tile_align=16,
                                     builder_opt_level=3,
-                                    trt_workspace_gb=20
+                                    trt_workspace_gb=24
                                 )
                             else:
                                 model, _, _ = load_model_node(context, Path(model_abs_path))
@@ -1055,18 +1055,18 @@ def preprocess_worker_image(
                         print(f"Loading TensorRT model: {model_abs_path}", flush=True)
                         model = TensorRTUpscaler(
                             onnx_path=model_abs_path,
-                            batch_size=1,
+                            batch_size=4,
                             use_fp16=False,
                             use_bf16=True,
                             use_strong_types=False,
                             device_id=settings_parser.get_int("accelerator_device_index", 0),
                             engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                            shape_min=(32, 32),
+                            shape_min=(512, 512),
                             shape_opt=(512, 512),
                             shape_max=(512, 512),
                             tile_align=16,
                             builder_opt_level=3,
-                            trt_workspace_gb=20
+                            trt_workspace_gb=24
                         )
                     else:
                         model, _, _ = load_model_node(context, Path(model_abs_path))
