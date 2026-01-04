@@ -346,9 +346,6 @@ class TensorRTUpscaler:
                 mode="reflect",
             )
 
-        if tile.shape[2] == 1:
-            tile = np.repeat(tile, 3, axis=2)
-
         # HWC -> CHW
         return np.ascontiguousarray(tile.transpose(2, 0, 1))
 
@@ -378,64 +375,91 @@ class TensorRTUpscaler:
         )
         num_tiles = len(tiles)
 
-        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles, Batch Size: {self.batch_size}")
+        dbg(f"Image {h}x{w} -> {out_h}x{out_w}, {num_tiles} tiles")
 
         img_float = img.astype(np.float32) / 255.0
 
+        # single tile
+        if num_tiles == 1:
+            tile_info = tiles[0]
+            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
+
+            tile_data = self._extract_tile(img_float, tile_info)
+
+            input_buf = cp.empty(
+                (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
+            )
+            buf_out_h = infer_h * self.scale
+            buf_out_w = infer_w * self.scale
+            output_buf = cp.empty(
+                (self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype
+            )
+
+            if self.is_dynamic:
+                self._set_input_shape(infer_h, infer_w)
+
+            with self.stream:
+                input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+                
+                self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+                self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+                self.context.execute_async_v3(self.stream.ptr)
+            
+            self.stream.synchronize()
+
+            result_chw = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
+            result = result_chw.transpose(1, 2, 0)
+
+            if tile_info.pad_bottom > 0:
+                result = result[: -tile_info.pad_bottom * self.scale, :, :]
+            if tile_info.pad_right > 0:
+                result = result[:, : -tile_info.pad_right * self.scale, :]
+
+            return np.clip(result * 255.0, 0, 255).astype(np.uint8)
+
+        # multi tile
         output = np.zeros((out_h, out_w, 3), dtype=np.float32)
         weight_sum = np.zeros((out_h, out_w, 1), dtype=np.float32)
+
         blend_masks: dict = {}
 
         input_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
         output_buffer_cache: dict[tuple[int, int], cp.ndarray] = {}
 
-        tile_idx = 0
-        while tile_idx < num_tiles:
-            
-            batch_tiles = []
-            reference_tile = tiles[tile_idx]
-            ref_h, ref_w = reference_tile.infer_h, reference_tile.infer_w
-            
-            while len(batch_tiles) < self.batch_size and tile_idx < num_tiles:
-                candidate_tile = tiles[tile_idx]
-                if candidate_tile.infer_h == ref_h and candidate_tile.infer_w == ref_w:
-                    batch_tiles.append(candidate_tile)
-                    tile_idx += 1
-                else:
-                    break
-            
-            shape_key = (ref_h, ref_w)
+        for _tile_idx, tile_info in enumerate(tiles):
+            tile_data = self._extract_tile(img_float, tile_info)
+            infer_h, infer_w = tile_info.infer_h, tile_info.infer_w
+            shape_key = (infer_h, infer_w)
+
             if shape_key not in input_buffer_cache:
                 input_buffer_cache[shape_key] = cp.empty(
-                    (self.batch_size, 3, ref_h, ref_w), dtype=self.input_cp_dtype
+                    (self.batch_size, 3, infer_h, infer_w), dtype=self.input_cp_dtype
                 )
-                buf_out_h = ref_h * self.scale
-                buf_out_w = ref_w * self.scale
+                buf_out_h = infer_h * self.scale
+                buf_out_w = infer_w * self.scale
                 output_buffer_cache[shape_key] = cp.empty(
-                    (self.batch_size, 3, buf_out_h, buf_out_w), dtype=self.output_cp_dtype
+                    (self.batch_size, 3, buf_out_h, buf_out_w),
+                    dtype=self.output_cp_dtype,
                 )
-            
+
             input_buf = input_buffer_cache[shape_key]
             output_buf = output_buffer_cache[shape_key]
 
-            with self.stream:
-                for i, tile_info in enumerate(batch_tiles):
-                    tile_data = self._extract_tile(img_float, tile_info)
-                    input_buf[i].set(tile_data)
+            if self.is_dynamic:
+                self._set_input_shape(infer_h, infer_w)
 
-                if self.is_dynamic:
-                    self._set_input_shape(ref_h, ref_w)
+            with self.stream:
+                input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
 
                 self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
                 self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-                
                 self.context.execute_async_v3(self.stream.ptr)
-
-            self.stream.synchronize()
             
-            for j, tile_info in enumerate(batch_tiles):
-                result_chw = cp.asnumpy(output_buf[j]).astype(np.float32, copy=False)
-                self._accumulate_tile(result_chw, tile_info, output, weight_sum, blend_masks)
+            self.stream.synchronize()
+
+            result = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
+
+            self._accumulate_tile(result, tile_info, output, weight_sum, blend_masks)
 
         weight_sum = np.maximum(weight_sum, 1e-8)
         output = output / weight_sum
