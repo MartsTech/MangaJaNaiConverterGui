@@ -1274,7 +1274,7 @@ def upscale_archive_file(
     # TODO accept multiple paths to reuse simple queues?
     
     input_name = Path(input_zip_path).stem.lower()
-    is_gray_finish = input_name.endswith("(gray)") or input_name.endswith("(gray-2048)")
+    force_standard_resize = input_name.endswith("(gray)") or input_name.endswith("(gray-2048)")
 
     upscale_queue = Queue(maxsize=1)
     postprocess_queue = MPQueue(maxsize=1)
@@ -1292,7 +1292,6 @@ def upscale_archive_file(
             chains,
             loaded_models,
             grayscale_detection_threshold,
-            is_gray_finish,
         ),
     )
     preprocess_process.start()
@@ -1315,6 +1314,7 @@ def upscale_archive_file(
             target_scale,
             target_width,
             target_height,
+            force_standard_resize
         ),
     )
     postprocess_process.start()
