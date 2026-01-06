@@ -174,10 +174,12 @@ def dotgain20_resize(image: np.ndarray, new_size: tuple[int, int]) -> np.ndarray
 
 
 def image_resize(
-    image: np.ndarray, new_size: tuple[int, int], is_grayscale: bool
+    image: np.ndarray, new_size: tuple[int, int], is_grayscale: bool, force_standard: bool = False
 ) -> np.ndarray:
-    if is_grayscale:
+    if is_grayscale and not force_standard:
         return dotgain20_resize(image, new_size)
+    if force_standard:
+        print("Forcing standard resize for grayscale image", flush=True)
 
     return standard_resize(image, new_size)
 
@@ -433,6 +435,7 @@ def final_target_resize(
     original_width: int,
     original_height: int,
     is_grayscale: bool,
+    force_standard_resize: bool = False
 ) -> np.ndarray:
     # fit to dimensions
     if target_height != 0 and target_width != 0:
@@ -448,14 +451,14 @@ def final_target_resize(
         h, w, _ = get_h_w_c(image)
         if h != target_height:
             return image_resize(
-                image, (round(w * target_height / h), target_height), is_grayscale
+                image, (round(w * target_height / h), target_height), is_grayscale, force_standard_resize
             )
     # resize width, keep proportional height
     elif target_width != 0:
         h, w, _ = get_h_w_c(image)
         if w != target_width:
             return image_resize(
-                image, (target_width, round(h * target_width / w)), is_grayscale
+                image, (target_width, round(h * target_width / w)), is_grayscale, force_standard_resize
             )
     else:
         h, w, _ = get_h_w_c(image)
@@ -465,6 +468,7 @@ def final_target_resize(
                 image,
                 (round(w * new_target_height / h), new_target_height),
                 is_grayscale,
+                force_standard_resize
             )
 
     return image
@@ -483,6 +487,7 @@ def save_image_zip(
     target_width: int,
     target_height: int,
     is_grayscale: bool,
+    force_standard_resize: bool = False,
 ) -> None:
     print(f"save image to zip: {file_name}", flush=True)
 
@@ -496,6 +501,7 @@ def save_image_zip(
         original_width,
         original_height,
         is_grayscale,
+        force_standard_resize,
     )
 
     # Convert the resized image back to bytes
@@ -1135,6 +1141,7 @@ def postprocess_worker_zip(
     target_scale: float,
     target_width: int,
     target_height: int,
+    force_standard_resize: bool = False,
 ) -> None:
     """
     wait for postprocess queue, for each queue entry, save the image to the zip file
@@ -1167,6 +1174,7 @@ def postprocess_worker_zip(
                     target_width,
                     target_height,
                     is_grayscale,
+                    force_standard_resize,
                 )
             else:  # copy file
                 output_zip.writestr(file_name, image)
@@ -1264,6 +1272,9 @@ def upscale_archive_file(
     grayscale_detection_threshold: int,
 ) -> None:
     # TODO accept multiple paths to reuse simple queues?
+    
+    input_name = Path(input_zip_path).stem.lower()
+    is_gray_finish = input_name.endswith("(gray)") or input_name.endswith("(gray-2048)")
 
     upscale_queue = Queue(maxsize=1)
     postprocess_queue = MPQueue(maxsize=1)
@@ -1281,6 +1292,7 @@ def upscale_archive_file(
             chains,
             loaded_models,
             grayscale_detection_threshold,
+            is_gray_finish,
         ),
     )
     preprocess_process.start()
