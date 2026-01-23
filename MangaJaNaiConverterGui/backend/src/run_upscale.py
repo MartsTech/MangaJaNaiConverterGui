@@ -390,6 +390,10 @@ def ai_upscale_image(
             if image.ndim == 2:
                 image = np.expand_dims(image, axis=2)
             
+            _, _, c = get_h_w_c(image)
+            if c == 4:
+                image = image[:, :, :3]
+            
             result = model.upscale_image(image, overlap=16)
 
             if result.dtype == np.uint8:
