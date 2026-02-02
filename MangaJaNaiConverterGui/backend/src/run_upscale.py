@@ -188,102 +188,12 @@ def get_system_codepage() -> Any:
     return None if not is_windows else ctypes.windll.kernel32.GetConsoleOutputCP()
 
 
-def _calculate_levels(hist: list) -> tuple[int, int]:
-    """
-    Helper to determine black and white levels from a histogram 
-    using the specific peak-finding logic.
-    """
-    # --- Black Level Logic ---
-    new_black_level = 0
-    global_max_black = hist[0]
-
-    for i in range(1, 31):
-        if hist[i] > global_max_black:
-            global_max_black = hist[i]
-            new_black_level = i
-
-    continuous_count = 0
-    for i in range(31, 256):
-        if hist[i] > global_max_black:
-            continuous_count = 0
-            global_max_black = hist[i]
-            new_black_level = i
-        elif hist[i] < global_max_black:
-            continuous_count += 1
-            if continuous_count > 1:
-                break
-
-    # --- White Level Logic ---
-    new_white_level = 255
-    global_max_white = hist[255]
-
-    for i in range(254, 224, -1):
-        if hist[i] > global_max_white:
-            global_max_white = hist[i]
-            new_white_level = i
-
-    continuous_count = 0
-    for i in range(223, -1, -1):
-        if hist[i] > global_max_white:
-            continuous_count = 0
-            global_max_white = hist[i]
-            new_white_level = i
-        elif hist[i] < global_max_white:
-            continuous_count += 1
-            if continuous_count > 1:
-                break
-                
-    return new_black_level, new_white_level
-
-
-def enhance_contrast(image: np.ndarray) -> MatLike:
-    h, w = image.shape[:2]
-
-    if w > h:
-        mid = w // 2
-        left_part = image[:, :mid]
-        right_part = image[:, mid:]
-
-        l_hist = Image.fromarray(left_part).convert("L").histogram()
-        r_hist = Image.fromarray(right_part).convert("L").histogram()
-        
-        l_blk, l_wht = _calculate_levels(l_hist)
-        r_blk, r_wht = _calculate_levels(r_hist)
-
-        if abs(l_blk - r_blk) > 5 or abs(l_wht - r_wht) > 5:
-            print("Double spread detected with significant lighting difference. Processing halves separately.")
-            left_enhanced = enhance_contrast(left_part)
-            right_enhanced = enhance_contrast(right_part)
-            return np.hstack((left_enhanced, right_enhanced))
-
-    image_p = Image.fromarray(image).convert("L")
-    hist = image_p.histogram()
-
-    new_black_level, new_white_level = _calculate_levels(hist)
-
-    print(
-        f"Auto adjusted levels: new black level = {new_black_level}; new white level = {new_white_level}",
-        flush=True,
-    )
-
-    image_array = np.array(image_p).astype("float32")
-    
-    denominator = new_white_level - new_black_level
-    if denominator == 0:
-        denominator = 1
-
-    image_array = np.maximum(image_array - new_black_level, 0) / denominator
-    return np.clip(image_array, 0, 1)
-
-
-# def enhance_contrast(image: np.ndarray) -> MatLike:
-#     image_p = Image.fromarray(image).convert("L")
-
-#     # Calculate the histogram
-#     hist = image_p.histogram()
-#     # print(hist)
-
-#     # Find the global maximum peak in the range 0-30 for the black level
+# def _calculate_levels(hist: list) -> tuple[int, int]:
+#     """
+#     Helper to determine black and white levels from a histogram 
+#     using the specific peak-finding logic.
+#     """
+#     # --- Black Level Logic ---
 #     new_black_level = 0
 #     global_max_black = hist[0]
 
@@ -291,10 +201,7 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 #         if hist[i] > global_max_black:
 #             global_max_black = hist[i]
 #             new_black_level = i
-#         # elif hist[i] < global_max_black:
-#         #     break
 
-#     # Continue searching at 31 and later for the black level
 #     continuous_count = 0
 #     for i in range(31, 256):
 #         if hist[i] > global_max_black:
@@ -306,7 +213,7 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 #             if continuous_count > 1:
 #                 break
 
-#     # Find the global maximum peak in the range 255-225 for the white level
+#     # --- White Level Logic ---
 #     new_white_level = 255
 #     global_max_white = hist[255]
 
@@ -314,10 +221,7 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 #         if hist[i] > global_max_white:
 #             global_max_white = hist[i]
 #             new_white_level = i
-#         # elif hist[i] < global_max_white:
-#         #     break
 
-#     # Continue searching at 224 and below for the white level
 #     continuous_count = 0
 #     for i in range(223, -1, -1):
 #         if hist[i] > global_max_white:
@@ -328,6 +232,34 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 #             continuous_count += 1
 #             if continuous_count > 1:
 #                 break
+                
+#     return new_black_level, new_white_level
+
+
+# def enhance_contrast(image: np.ndarray) -> MatLike:
+#     h, w = image.shape[:2]
+
+#     if w > h:
+#         mid = w // 2
+#         left_part = image[:, :mid]
+#         right_part = image[:, mid:]
+
+#         l_hist = Image.fromarray(left_part).convert("L").histogram()
+#         r_hist = Image.fromarray(right_part).convert("L").histogram()
+        
+#         l_blk, l_wht = _calculate_levels(l_hist)
+#         r_blk, r_wht = _calculate_levels(r_hist)
+
+#         if abs(l_blk - r_blk) > 5 or abs(l_wht - r_wht) > 5:
+#             print("Double spread detected with significant lighting difference. Processing halves separately.")
+#             left_enhanced = enhance_contrast(left_part)
+#             right_enhanced = enhance_contrast(right_part)
+#             return np.hstack((left_enhanced, right_enhanced))
+
+#     image_p = Image.fromarray(image).convert("L")
+#     hist = image_p.histogram()
+
+#     new_black_level, new_white_level = _calculate_levels(hist)
 
 #     print(
 #         f"Auto adjusted levels: new black level = {new_black_level}; new white level = {new_white_level}",
@@ -335,10 +267,78 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 #     )
 
 #     image_array = np.array(image_p).astype("float32")
-#     image_array = np.maximum(image_array - new_black_level, 0) / (
-#         new_white_level - new_black_level
-#     )
+    
+#     denominator = new_white_level - new_black_level
+#     if denominator == 0:
+#         denominator = 1
+
+#     image_array = np.maximum(image_array - new_black_level, 0) / denominator
 #     return np.clip(image_array, 0, 1)
+
+
+def enhance_contrast(image: np.ndarray) -> MatLike:
+    image_p = Image.fromarray(image).convert("L")
+
+    # Calculate the histogram
+    hist = image_p.histogram()
+    # print(hist)
+
+    # Find the global maximum peak in the range 0-30 for the black level
+    new_black_level = 0
+    global_max_black = hist[0]
+
+    for i in range(1, 31):
+        if hist[i] > global_max_black:
+            global_max_black = hist[i]
+            new_black_level = i
+        # elif hist[i] < global_max_black:
+        #     break
+
+    # Continue searching at 31 and later for the black level
+    continuous_count = 0
+    for i in range(31, 256):
+        if hist[i] > global_max_black:
+            continuous_count = 0
+            global_max_black = hist[i]
+            new_black_level = i
+        elif hist[i] < global_max_black:
+            continuous_count += 1
+            if continuous_count > 1:
+                break
+
+    # Find the global maximum peak in the range 255-225 for the white level
+    new_white_level = 255
+    global_max_white = hist[255]
+
+    for i in range(254, 224, -1):
+        if hist[i] > global_max_white:
+            global_max_white = hist[i]
+            new_white_level = i
+        # elif hist[i] < global_max_white:
+        #     break
+
+    # Continue searching at 224 and below for the white level
+    continuous_count = 0
+    for i in range(223, -1, -1):
+        if hist[i] > global_max_white:
+            continuous_count = 0
+            global_max_white = hist[i]
+            new_white_level = i
+        elif hist[i] < global_max_white:
+            continuous_count += 1
+            if continuous_count > 1:
+                break
+
+    print(
+        f"Auto adjusted levels: new black level = {new_black_level}; new white level = {new_white_level}",
+        flush=True,
+    )
+
+    image_array = np.array(image_p).astype("float32")
+    image_array = np.maximum(image_array - new_black_level, 0) / (
+        new_white_level - new_black_level
+    )
+    return np.clip(image_array, 0, 1)
 
 
 def _read_image(img_stream: bytes, filename: str) -> np.ndarray:
