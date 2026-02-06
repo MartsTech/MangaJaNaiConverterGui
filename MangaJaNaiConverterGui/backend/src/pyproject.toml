@@ -22,7 +22,8 @@ dependencies = [
   "rich",
   "requests",
   "urllib3",
-  "onnx"
+  "onnx",
+  "pillow"
 ]
 authors = [{name = "the-database"}]
 description = "Upscaling manga images and archives with PyTorch models."
