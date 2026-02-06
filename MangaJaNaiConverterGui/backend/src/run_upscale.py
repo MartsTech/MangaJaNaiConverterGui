@@ -310,7 +310,7 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
     new_white_level = 255
     global_max_white = hist[255]
 
-    for i in range(254, 224, -1):
+    for i in range(254, 239, -1):
         if hist[i] > global_max_white:
             global_max_white = hist[i]
             new_white_level = i
@@ -319,7 +319,7 @@ def enhance_contrast(image: np.ndarray) -> MatLike:
 
     # Continue searching at 224 and below for the white level
     continuous_count = 0
-    for i in range(223, -1, -1):
+    for i in range(239, -1, -1):
         if hist[i] > global_max_white:
             continuous_count = 0
             global_max_white = hist[i]
@@ -381,7 +381,7 @@ def cv_image_is_grayscale(image: np.ndarray, user_threshold: float) -> bool:
 
     # if the entire image is pure black or pure white, return False
     if size_without_black_and_white == 0:
-        return False
+        return True
 
     # finding ratio of diff_sum with respect to size of image without pure black and pure white pixels
     ratio = diff_sum / size_without_black_and_white
@@ -1366,7 +1366,7 @@ def upscale_archive_file(
     # TODO accept multiple paths to reuse simple queues?
     
     input_name = Path(input_zip_path).stem.lower()
-    force_standard_resize = input_name.endswith("(gray)") or input_name.endswith("(gray-2048)")
+    force_standard_resize = input_name.endswith("(gray)") or input_name.endswith("(gray2)") or input_name.endswith("(gray-2048)") or input_name.endswith("(gray2-2048)")
 
     upscale_queue = Queue(maxsize=1)
     postprocess_queue = MPQueue(maxsize=1)
