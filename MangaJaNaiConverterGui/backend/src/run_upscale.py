@@ -19,6 +19,8 @@ import cv2
 import numpy as np
 import pyvips
 import rarfile
+import torch
+import torch.nn.functional as F
 from chainner_ext import ResizeFilter, resize
 from cv2.typing import MatLike
 from PIL import Image, ImageCms, ImageFilter
@@ -113,6 +115,77 @@ def get_tile_size(tile_size_str: str) -> TileSize:
     return ESTIMATE
 
 
+def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
+    kernel_vals = [
+        [0.0625, 0.125, 0.0625],
+        [0.125, 0.25, 0.125],
+        [0.0625, 0.125, 0.0625],
+    ]
+    kernel = torch.tensor(kernel_vals, dtype=image.dtype, device=image.device)
+    kernel = kernel[None, None].repeat(3, 1, 1, 1)
+    image = F.pad(image, (radius, radius, radius, radius), mode="replicate")
+    output = F.conv2d(image, kernel, groups=3, dilation=radius)
+    return output
+
+
+def wavelet_decomposition(image: torch.Tensor, levels: int = 5):
+    high_freq = torch.zeros_like(image)
+    low_freq = image
+    for i in range(levels):
+        low_freq = wavelet_blur(image, radius=2**i)
+        high_freq += image - low_freq
+        image = low_freq
+    return high_freq, low_freq
+
+
+def wavelet_reconstruction(
+    content_feat: torch.Tensor, style_feat: torch.Tensor, levels: int
+) -> torch.Tensor:
+    content_high_freq, _ = wavelet_decomposition(content_feat, levels=levels)
+    _, style_low_freq = wavelet_decomposition(style_feat, levels=levels)
+    return content_high_freq + style_low_freq
+
+
+def apply_wavelet_color_fix(
+    target_img: np.ndarray, source_img: np.ndarray, levels: int = 5
+) -> np.ndarray:
+    """
+    Applies wavelet color fix using the source_img (original) as the color reference
+    and target_img (upscaled) as the content reference.
+    """
+    device_idx = settings_parser.get_int("accelerator_device_index", 0)
+    device = torch.device(f"cuda:{device_idx}" if torch.cuda.is_available() else "cpu")
+
+    target_h, target_w, _ = get_h_w_c(target_img)
+
+    # Resize source image (original) to match target image (upscaled)
+    # Using Box filter is generally better for the 'color' reference pass to avoid ringing
+    source_img_resized = resize(
+        source_img, (target_w, target_h), ResizeFilter.Box, False
+    )
+
+    # Helper to convert Numpy HWC [0-1] to Tensor BCHW
+    def to_tensor(img):
+        # Assumes float32 0-1 input
+        t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
+        return t.to(device)
+
+    target_tensor = to_tensor(target_img)
+    source_tensor_resized = to_tensor(source_img_resized)
+
+    with torch.no_grad():
+        result_tensor = wavelet_reconstruction(
+            target_tensor, source_tensor_resized, levels=levels
+        )
+        result_tensor = torch.clamp(result_tensor, 0, 1)
+
+    # Convert back to Numpy HWC
+    result_img = result_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    return result_img
+
+# --- WAVELET COLOR FIX FUNCTIONS END ---
+
+
 """
 lanczos downscale without color conversion, for pre-upscale
 downscale and final color downscale
@@ -186,94 +259,6 @@ def image_resize(
 
 def get_system_codepage() -> Any:
     return None if not is_windows else ctypes.windll.kernel32.GetConsoleOutputCP()
-
-
-# def _calculate_levels(hist: list) -> tuple[int, int]:
-#     """
-#     Helper to determine black and white levels from a histogram 
-#     using the specific peak-finding logic.
-#     """
-#     # --- Black Level Logic ---
-#     new_black_level = 0
-#     global_max_black = hist[0]
-
-#     for i in range(1, 31):
-#         if hist[i] > global_max_black:
-#             global_max_black = hist[i]
-#             new_black_level = i
-
-#     continuous_count = 0
-#     for i in range(31, 256):
-#         if hist[i] > global_max_black:
-#             continuous_count = 0
-#             global_max_black = hist[i]
-#             new_black_level = i
-#         elif hist[i] < global_max_black:
-#             continuous_count += 1
-#             if continuous_count > 1:
-#                 break
-
-#     # --- White Level Logic ---
-#     new_white_level = 255
-#     global_max_white = hist[255]
-
-#     for i in range(254, 224, -1):
-#         if hist[i] > global_max_white:
-#             global_max_white = hist[i]
-#             new_white_level = i
-
-#     continuous_count = 0
-#     for i in range(223, -1, -1):
-#         if hist[i] > global_max_white:
-#             continuous_count = 0
-#             global_max_white = hist[i]
-#             new_white_level = i
-#         elif hist[i] < global_max_white:
-#             continuous_count += 1
-#             if continuous_count > 1:
-#                 break
-                
-#     return new_black_level, new_white_level
-
-
-# def enhance_contrast(image: np.ndarray) -> MatLike:
-#     h, w = image.shape[:2]
-
-#     if w > h:
-#         mid = w // 2
-#         left_part = image[:, :mid]
-#         right_part = image[:, mid:]
-
-#         l_hist = Image.fromarray(left_part).convert("L").histogram()
-#         r_hist = Image.fromarray(right_part).convert("L").histogram()
-        
-#         l_blk, l_wht = _calculate_levels(l_hist)
-#         r_blk, r_wht = _calculate_levels(r_hist)
-
-#         if abs(l_blk - r_blk) > 5 or abs(l_wht - r_wht) > 5:
-#             print("Double spread detected with significant lighting difference. Processing halves separately.")
-#             left_enhanced = enhance_contrast(left_part)
-#             right_enhanced = enhance_contrast(right_part)
-#             return np.hstack((left_enhanced, right_enhanced))
-
-#     image_p = Image.fromarray(image).convert("L")
-#     hist = image_p.histogram()
-
-#     new_black_level, new_white_level = _calculate_levels(hist)
-
-#     print(
-#         f"Auto adjusted levels: new black level = {new_black_level}; new white level = {new_white_level}",
-#         flush=True,
-#     )
-
-#     image_array = np.array(image_p).astype("float32")
-    
-#     denominator = new_white_level - new_black_level
-#     if denominator == 0:
-#         denominator = 1
-
-#     image_array = np.maximum(image_array - new_black_level, 0) / denominator
-#     return np.clip(image_array, 0, 1)
 
 
 def enhance_contrast(image: np.ndarray) -> MatLike:
@@ -1211,7 +1196,19 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
             break
 
         if is_image:
+            # Save original image (pre-upscale) to be used as color reference
+            original_for_fix = image
+
             image = ai_upscale_image(image, model_tile_size, model)
+
+            # Apply Wavelet Color Fix if image is NOT grayscale
+            if not is_grayscale:
+                try:
+                    # You can adjust levels (e.g., 5) as needed
+                    image = apply_wavelet_color_fix(image, original_for_fix, levels=5)
+                    print("Applied Wavelet Color Fix", flush=True)
+                except Exception as e:
+                    print(f"Failed to apply Wavelet Color Fix: {e}", flush=True)
 
             # convert back to grayscale
             if is_grayscale:
