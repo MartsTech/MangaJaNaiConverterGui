@@ -623,6 +623,7 @@ def save_image(
 
     args = {"Q": int(lossy_compression_quality)}
     if image_format in {"webp"}:
+        print(f"Saving with lossless={use_lossless_compression}", flush=True)
         args["lossless"] = use_lossless_compression
     pyvips.Image.new_from_array(image).write_to_file(output_file_path, **args)
 
