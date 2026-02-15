@@ -724,7 +724,9 @@ def preprocess_worker_archive_file(
 
                 model = None
                 tile_size_str = ""
+                model_file_path = None
                 if chain is not None:
+                    model_file_path = chain["ModelFilePath"]
                     resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                     resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
                     resize_factor_before_upscale = chain["ResizeFactorBeforeUpscale"]
@@ -834,6 +836,7 @@ def preprocess_worker_archive_file(
                         original_height,
                         get_tile_size(tile_size_str),
                         model,
+                        model_file_path,
                     )
                 )
         except Exception as e:
@@ -842,7 +845,7 @@ def preprocess_worker_archive_file(
                 flush=True,
             )
             upscale_queue.put(
-                (image_data, decoded_filename, False, False, None, None, None, None)
+                (image_data, decoded_filename, False, False, None, None, None, None, None)
             )
         #     pass
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -921,7 +924,9 @@ def preprocess_worker_folder(
 
                     model = None
                     tile_size_str = ""
+                    model_file_path = None
                     if chain is not None:
+                        model_file_path = chain["ModelFilePath"]
                         resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                         resize_height_before_upscale = chain[
                             "ResizeHeightBeforeUpscale"
@@ -1039,6 +1044,7 @@ def preprocess_worker_folder(
                             original_height,
                             get_tile_size(tile_size_str),
                             model,
+                            model_file_path,
                         )
                     )
             elif filename.lower().endswith(ARCHIVE_EXTENSIONS):
@@ -1106,7 +1112,9 @@ def preprocess_worker_image(
 
         model = None
         tile_size_str = ""
+        model_file_path = None
         if chain is not None:
+            model_file_path = chain["ModelFilePath"]
             resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
             resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
             resize_factor_before_upscale = chain["ResizeFactorBeforeUpscale"]
@@ -1220,6 +1228,7 @@ def preprocess_worker_image(
                 original_height,
                 get_tile_size(tile_size_str),
                 model,
+                model_file_path,
             )
         )
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -1240,6 +1249,7 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
             original_height,
             model_tile_size,
             model,
+            model_file_path,
         ) = upscale_queue.get()
         if image is None:
             break
@@ -1252,12 +1262,15 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
 
             # Apply Wavelet Color Fix if image is NOT grayscale
             if not is_grayscale:
-                try:
-                    # You can adjust levels (e.g., 5) as needed
-                    image = apply_wavelet_color_fix(image, original_for_fix, levels=5)
-                    print("Applied Wavelet Color Fix", flush=True)
-                except Exception as e:
-                    print(f"Failed to apply Wavelet Color Fix: {e}", flush=True)
+                if model_file_path and "scunet_color_real_psnr.pth" in model_file_path:
+                    print(f"Wavelet Color Fix disabled for model: {model_file_path}", flush=True)
+                else:
+                    try:
+                        # You can adjust levels (e.g., 5) as needed
+                        image = apply_wavelet_color_fix(image, original_for_fix, levels=5)
+                        print("Applied Wavelet Color Fix", flush=True)
+                    except Exception as e:
+                        print(f"Failed to apply Wavelet Color Fix: {e}", flush=True)
 
             # convert back to grayscale
             if is_grayscale:
@@ -1764,7 +1777,7 @@ settings = parse_settings_from_cli()
 workflow = settings["Workflows"]["$values"][settings["SelectedWorkflowIndex"]]
 models_directory = settings["ModelsDirectory"]
 
-UPSCALE_SENTINEL = (None, None, None, None, None, None, None, None)
+UPSCALE_SENTINEL = (None, None, None, None, None, None, None, None, None)
 POSTPROCESS_SENTINEL = (None, None, None, None, None, None)
 CV2_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 IMAGE_EXTENSIONS = (*CV2_IMAGE_EXTENSIONS, ".avif")
