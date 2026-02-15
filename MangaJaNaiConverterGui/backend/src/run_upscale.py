@@ -784,12 +784,28 @@ def preprocess_worker_archive_file(
                     elif os.path.exists(model_abs_path):
                         if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
                             print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                            
+                            filename_lower = model_abs_path.lower()
+                            
+                            if "fp16" in filename_lower:
+                                use_fp16_val = True
+                                use_strong_types_val = True
+                                use_bf16_val = False
+                            elif "fp32" in filename_lower:
+                                use_fp16_val = False
+                                use_strong_types_val = False
+                                use_bf16_val = True
+                            else:
+                                use_fp16_val = False
+                                use_strong_types_val = False
+                                use_bf16_val = True
+
                             model = TensorRTUpscaler(
                                 onnx_path=model_abs_path,
                                 batch_size=1,
-                                use_fp16=False,
-                                use_bf16=True,
-                                use_strong_types=False,
+                                use_fp16=use_fp16_val,
+                                use_bf16=use_bf16_val,
+                                use_strong_types=use_strong_types_val,
                                 device_id=settings_parser.get_int("accelerator_device_index", 0),
                                 engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                                 shape_min=(32, 32),
@@ -973,12 +989,28 @@ def preprocess_worker_folder(
                         elif os.path.exists(model_abs_path):
                             if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
                                 print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                                
+                                filename_lower = model_abs_path.lower()
+                                
+                                if "fp16" in filename_lower:
+                                    use_fp16_val = True
+                                    use_strong_types_val = True
+                                    use_bf16_val = False
+                                elif "fp32" in filename_lower:
+                                    use_fp16_val = False
+                                    use_strong_types_val = False
+                                    use_bf16_val = True
+                                else:
+                                    use_fp16_val = False
+                                    use_strong_types_val = False
+                                    use_bf16_val = True
+
                                 model = TensorRTUpscaler(
                                     onnx_path=model_abs_path,
                                     batch_size=1,
-                                    use_fp16=False,
-                                    use_bf16=True,
-                                    use_strong_types=False,
+                                    use_fp16=use_fp16_val,
+                                    use_bf16=use_bf16_val,
+                                    use_strong_types=use_strong_types_val,
                                     device_id=settings_parser.get_int("accelerator_device_index", 0),
                                     engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                                     shape_min=(32, 32),
@@ -1137,12 +1169,28 @@ def preprocess_worker_image(
                 elif os.path.exists(model_abs_path):
                     if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
                         print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                        
+                        filename_lower = model_abs_path.lower()
+                        
+                        if "fp16" in filename_lower:
+                            use_fp16_val = True
+                            use_strong_types_val = True
+                            use_bf16_val = False
+                        elif "fp32" in filename_lower:
+                            use_fp16_val = False
+                            use_strong_types_val = False
+                            use_bf16_val = True
+                        else:
+                            use_fp16_val = False
+                            use_strong_types_val = False
+                            use_bf16_val = True
+
                         model = TensorRTUpscaler(
                             onnx_path=model_abs_path,
                             batch_size=1,
-                            use_fp16=False,
-                            use_bf16=True,
-                            use_strong_types=False,
+                            use_fp16=use_fp16_val,
+                            use_bf16=use_bf16_val,
+                            use_strong_types=use_strong_types_val,
                             device_id=settings_parser.get_int("accelerator_device_index", 0),
                             engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
                             shape_min=(32, 32),
