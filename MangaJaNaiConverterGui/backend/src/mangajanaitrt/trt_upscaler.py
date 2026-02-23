@@ -10,6 +10,11 @@ from .console import console, dbg
 from .tile_info import TileInfo
 
 
+# TODO test performance
+cp.cuda.set_allocator(None)
+cp.cuda.set_pinned_memory_allocator(None)
+
+
 def onnx_conv_info(onnx_path: str):
     m = onnx.load(onnx_path)
     info = {}
@@ -398,13 +403,12 @@ class TensorRTUpscaler:
             if self.is_dynamic:
                 self._set_input_shape(infer_h, infer_w)
 
-            with self.stream:
-                input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
-                
-                self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-                self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-                self.context.execute_async_v3(self.stream.ptr)
-            
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+            cp.cuda.get_current_stream().synchronize()
+
+            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+            self.context.execute_async_v3(self.stream.ptr)
             self.stream.synchronize()
 
             result_chw = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)
@@ -448,13 +452,12 @@ class TensorRTUpscaler:
             if self.is_dynamic:
                 self._set_input_shape(infer_h, infer_w)
 
-            with self.stream:
-                input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+            input_buf[0] = cp.asarray(tile_data, dtype=self.input_cp_dtype)
+            cp.cuda.get_current_stream().synchronize()
 
-                self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
-                self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
-                self.context.execute_async_v3(self.stream.ptr)
-            
+            self.context.set_tensor_address(self.input_name, input_buf.data.ptr)
+            self.context.set_tensor_address(self.output_name, output_buf.data.ptr)
+            self.context.execute_async_v3(self.stream.ptr)
             self.stream.synchronize()
 
             result = cp.asnumpy(output_buf[0]).astype(np.float32, copy=False)

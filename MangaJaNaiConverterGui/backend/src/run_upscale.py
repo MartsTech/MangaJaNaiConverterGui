@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import sys
+import threading
 import time
 from collections.abc import Callable
 from io import BytesIO
@@ -32,6 +33,11 @@ from spandrel import ImageModelDescriptor, ModelDescriptor
 sys.path.append(os.path.normpath(os.path.dirname(os.path.abspath(__file__))))
 
 from mangajanaitrt.trt_upscaler import TensorRTUpscaler
+try:
+    from mangajanaitrt.vram_monitor import MultiGPUVRAMMonitor
+except ImportError:
+    MultiGPUVRAMMonitor = None
+
 import spandrel_custom
 from nodes.impl.image_utils import normalize, to_uint8, to_uint16
 from nodes.impl.upscale.auto_split_tiles import (
@@ -51,6 +57,9 @@ from api import (
     NodeContext,
     SettingsParser,
 )
+
+# Global lock to ensure thread-safe TensorRT Engine building
+engine_build_lock = threading.Lock()
 
 
 class _ExecutorNodeContext(NodeContext):
@@ -185,12 +194,19 @@ def apply_wavelet_color_fix(
 
 # --- WAVELET COLOR FIX FUNCTIONS END ---
 
+def upscale_alpha(alpha: np.ndarray, scale: int) -> np.ndarray:
+    """Upscale alpha channel separately to ensure transparency is preserved"""
+    h, w = alpha.shape
+    img = pyvips.Image.new_from_memory(alpha.tobytes(), w, h, 1, "uchar")
+    img = img.resize(scale, kernel="cubic")
+    return np.ndarray(
+        buffer=img.write_to_memory(), dtype=np.uint8, shape=[img.height, img.width]
+    )
 
 """
 lanczos downscale without color conversion, for pre-upscale
 downscale and final color downscale
 """
-
 
 def standard_resize(image: np.ndarray, new_size: tuple[int, int]) -> np.ndarray:
     h, w, _ = get_h_w_c(image)
@@ -464,10 +480,18 @@ def ai_upscale_image(
                 image = np.expand_dims(image, axis=2)
             
             _, _, c = get_h_w_c(image)
+            alpha = None
             if c == 4:
-                image = image[:, :, :3]
+                alpha = image[:, :, 3]  # Extract Alpha
+                image = image[:, :, :3] # Keep RGB
             
             result = model.upscale_image(image, overlap=16)
+
+            # Re-attach and upscale alpha if it exists
+            if alpha is not None:
+                scale = result.shape[0] // image.shape[0] # dynamically calculate scale factor
+                result_alpha = upscale_alpha(alpha, scale)
+                result = np.dstack([result, result_alpha])
 
             if result.dtype == np.uint8:
                 result = result.astype(np.float32) / 255.0
@@ -704,7 +728,7 @@ def preprocess_worker_archive_file(
                 # Read the image data
 
                 image_data = file_in_archive.read()
-
+                
                 # image_bytes = io.BytesIO(image_data)
                 image = _read_image(image_data, filename)
                 print("read image", filename, flush=True)
@@ -802,21 +826,22 @@ def preprocess_worker_archive_file(
                                 use_strong_types_val = False
                                 use_bf16_val = True
 
-                            model = TensorRTUpscaler(
-                                onnx_path=model_abs_path,
-                                batch_size=1,
-                                use_fp16=use_fp16_val,
-                                use_bf16=use_bf16_val,
-                                use_strong_types=use_strong_types_val,
-                                device_id=settings_parser.get_int("accelerator_device_index", 0),
-                                engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                shape_min=(32, 32),
-                                shape_opt=(512, 512),
-                                shape_max=(512, 512),
-                                tile_align=16,
-                                builder_opt_level=3,
-                                trt_workspace_gb=24
-                            )
+                            with engine_build_lock:
+                                model = TensorRTUpscaler(
+                                    onnx_path=model_abs_path,
+                                    batch_size=1,
+                                    use_fp16=use_fp16_val,
+                                    use_bf16=use_bf16_val,
+                                    use_strong_types=use_strong_types_val,
+                                    device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                    engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                    shape_min=(32, 32),
+                                    shape_opt=(512, 512),
+                                    shape_max=(512, 512),
+                                    tile_align=16,
+                                    builder_opt_level=3,
+                                    trt_workspace_gb=24
+                                )
                         else:
                             model, _, _ = load_model_node(context, Path(model_abs_path))
                         loaded_models[model_abs_path] = model
@@ -1010,28 +1035,29 @@ def preprocess_worker_folder(
                                     use_strong_types_val = False
                                     use_bf16_val = True
 
-                                model = TensorRTUpscaler(
-                                    onnx_path=model_abs_path,
-                                    batch_size=1,
-                                    use_fp16=use_fp16_val,
-                                    use_bf16=use_bf16_val,
-                                    use_strong_types=use_strong_types_val,
-                                    device_id=settings_parser.get_int("accelerator_device_index", 0),
-                                    engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                    shape_min=(32, 32),
-                                    shape_opt=(512, 512),
-                                    shape_max=(512, 512),
-                                    tile_align=16,
-                                    builder_opt_level=3,
-                                    trt_workspace_gb=24
-                                )
+                                with engine_build_lock:
+                                    model = TensorRTUpscaler(
+                                        onnx_path=model_abs_path,
+                                        batch_size=1,
+                                        use_fp16=use_fp16_val,
+                                        use_bf16=use_bf16_val,
+                                        use_strong_types=use_strong_types_val,
+                                        device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                        engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                        shape_min=(32, 32),
+                                        shape_opt=(512, 512),
+                                        shape_max=(512, 512),
+                                        tile_align=16,
+                                        builder_opt_level=3,
+                                        trt_workspace_gb=24
+                                    )
                             else:
                                 model, _, _ = load_model_node(context, Path(model_abs_path))
                             loaded_models[model_abs_path] = model
                         tile_size_str = chain["ModelTileSize"]
                     else:
                         image = normalize(image)
-
+                            
                     # image = np.ascontiguousarray(image)
 
                     upscale_queue.put(
@@ -1193,21 +1219,22 @@ def preprocess_worker_image(
                             use_strong_types_val = False
                             use_bf16_val = True
 
-                        model = TensorRTUpscaler(
-                            onnx_path=model_abs_path,
-                            batch_size=1,
-                            use_fp16=use_fp16_val,
-                            use_bf16=use_bf16_val,
-                            use_strong_types=use_strong_types_val,
-                            device_id=settings_parser.get_int("accelerator_device_index", 0),
-                            engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                            shape_min=(32, 32),
-                            shape_opt=(512, 512),
-                            shape_max=(512, 512),
-                            tile_align=16,
-                            builder_opt_level=3,
-                            trt_workspace_gb=24
-                        )
+                        with engine_build_lock:
+                            model = TensorRTUpscaler(
+                                onnx_path=model_abs_path,
+                                batch_size=1,
+                                use_fp16=use_fp16_val,
+                                use_bf16=use_bf16_val,
+                                use_strong_types=use_strong_types_val,
+                                device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                shape_min=(32, 32),
+                                shape_opt=(512, 512),
+                                shape_max=(512, 512),
+                                tile_align=16,
+                                builder_opt_level=3,
+                                trt_workspace_gb=24
+                            )
                     else:
                         model, _, _ = load_model_node(context, Path(model_abs_path))
                     loaded_models[model_abs_path] = model
@@ -1217,7 +1244,7 @@ def preprocess_worker_image(
             image = normalize(image)
 
         # image = np.ascontiguousarray(image)
-
+        
         upscale_queue.put(
             (
                 image,
@@ -1791,7 +1818,7 @@ settings_parser = SettingsParser(
     {
         "use_cpu": False,
         "use_fp16": settings["UseFp16"],
-        "accelerator_device_index": settings["SelectedDeviceIndex"],
+        "accelerator_device_index": settings["SelectedDeviceIndex"] if settings['SelectedDeviceIndex'] is not None else 0,
         "budget_limit": 0,
     }
 )
@@ -1815,6 +1842,12 @@ if __name__ == "__main__":
     # gc.disable() #TODO!!!!!!!!!!!!
     # Record the start time
     start_time = time.time()
+
+    vram_monitor = None
+    if MultiGPUVRAMMonitor is not None:
+        device_idx = settings_parser.get_int("accelerator_device_index", 0)
+        vram_monitor = MultiGPUVRAMMonitor(device_ids=[device_idx])
+        vram_monitor.start()
 
     image_format = None
     if workflow["WebpSelected"]:
@@ -1876,6 +1909,10 @@ if __name__ == "__main__":
             loaded_models,
             grayscale_detection_threshold,
         )
+
+    if vram_monitor is not None:
+        vram_stats = vram_monitor.stop()
+        print("VRAM Stats:", vram_stats, flush=True)
 
     # # Record the end time
     end_time = time.time()
