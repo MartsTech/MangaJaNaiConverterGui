@@ -216,6 +216,8 @@ def standard_resize(image: np.ndarray, new_size: tuple[int, int]) -> np.ndarray:
     # prevent upscaling
     if new_size[0] > w or new_size[1] > h:
         return image
+        
+    print(f"Applying standard_resize (Lanczos) to {new_size}", flush=True)
     
     new_image = image.astype(np.float32) / 255.0
     new_image = resize(new_image, new_size, ResizeFilter.Lanczos, False)
@@ -242,6 +244,8 @@ def dotgain20_resize(image: np.ndarray, new_size: tuple[int, int]) -> np.ndarray
     # prevent upscaling
     if new_size[0] > w or new_size[1] > h:
         return image
+        
+    print(f"Applying dotgain20_resize to {new_size}", flush=True)
     
     size_ratio = h / new_size[1]
     blur_size = (1 / size_ratio - 1) / 3.5
@@ -267,7 +271,7 @@ def image_resize(
 ) -> np.ndarray:
     if is_grayscale and not force_standard:
         return dotgain20_resize(image, new_size)
-    if force_standard:
+    if force_standard and is_grayscale:
         print("Forcing standard resize for grayscale image", flush=True)
 
     return standard_resize(image, new_size)
@@ -275,6 +279,11 @@ def image_resize(
 
 def get_system_codepage() -> Any:
     return None if not is_windows else ctypes.windll.kernel32.GetConsoleOutputCP()
+
+
+def get_force_standard_resize(name: str) -> bool:
+    lower_name = name.lower()
+    return lower_name.endswith("(gray)") or lower_name.endswith("(gray4)") or lower_name.endswith("(gray-2048)") or lower_name.endswith("(gray4-2048)")
 
 
 def enhance_contrast(image: np.ndarray) -> MatLike:
@@ -630,6 +639,7 @@ def save_image(
     target_width: int,
     target_height: int,
     is_grayscale: bool,
+    force_standard_resize: bool = False,
 ) -> None:
     print(f"save image: {output_file_path}", flush=True)
 
@@ -643,6 +653,7 @@ def save_image(
         original_width,
         original_height,
         is_grayscale,
+        force_standard_resize,
     )
 
     args = {"Q": int(lossy_compression_quality)}
@@ -662,6 +673,7 @@ def preprocess_worker_archive(
     chains: list[dict[str, Any]],
     loaded_models: dict[str, ModelDescriptor],
     grayscale_detection_threshold: int,
+    force_standard_resize: bool,
 ) -> None:
     """
     given a zip or rar path, read images out of the archive, apply auto levels, add the image to upscale queue
@@ -679,6 +691,7 @@ def preprocess_worker_archive(
                 chains,
                 loaded_models,
                 grayscale_detection_threshold,
+                force_standard_resize,
             )
     elif input_archive_path.endswith(RAR_EXTENSIONS):
         with rarfile.RarFile(input_archive_path, "r") as input_rar:
@@ -692,6 +705,7 @@ def preprocess_worker_archive(
                 chains,
                 loaded_models,
                 grayscale_detection_threshold,
+                force_standard_resize,
             )
 
 
@@ -705,6 +719,7 @@ def preprocess_worker_archive_file(
     chains: list[dict[str, Any]],
     loaded_models: dict[str, ModelDescriptor],
     grayscale_detection_threshold: int,
+    force_standard_resize: bool,
 ) -> None:
     """
     given an input zip or rar archive, read images out of the archive, apply auto levels, add the image to upscale queue
@@ -761,38 +776,42 @@ def preprocess_worker_archive_file(
                         and resize_width_before_upscale != 0
                     ):
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (resize_width_before_upscale, resize_height_before_upscale),
+                            is_grayscale, force_standard_resize
                         )
                     # resize height, keep proportional width
                     elif resize_height_before_upscale != 0:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 round(w * resize_height_before_upscale / h),
                                 resize_height_before_upscale,
                             ),
+                            is_grayscale, force_standard_resize
                         )
                     # resize width, keep proportional height
                     elif resize_width_before_upscale != 0:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 resize_width_before_upscale,
                                 round(h * resize_width_before_upscale / w),
                             ),
+                            is_grayscale, force_standard_resize
                         )
                     elif resize_factor_before_upscale != 100:
                         h, w, _ = get_h_w_c(image)
-                        image = standard_resize(
+                        image = image_resize(
                             image,
                             (
                                 round(w * resize_factor_before_upscale / 100),
                                 round(h * resize_factor_before_upscale / 100),
                             ),
+                            is_grayscale, force_standard_resize
                         )
                     
                     # ensure the resized image dimensions are correctly updated    
@@ -862,6 +881,7 @@ def preprocess_worker_archive_file(
                         get_tile_size(tile_size_str),
                         model,
                         model_file_path,
+                        force_standard_resize,
                     )
                 )
         except Exception as e:
@@ -870,7 +890,7 @@ def preprocess_worker_archive_file(
                 flush=True,
             )
             upscale_queue.put(
-                (image_data, decoded_filename, False, False, None, None, None, None, None)
+                (image_data, decoded_filename, False, False, None, None, None, None, None, force_standard_resize)
             )
         #     pass
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -919,6 +939,8 @@ def preprocess_worker_folder(
             )
 
             if filename.lower().endswith(IMAGE_EXTENSIONS):  # TODO if image
+                force_standard_resize = get_force_standard_resize(input_file_base)
+
                 if upscale_images:
                     output_file_path = str(
                         Path(f"{output_file_path}.{image_format}")
@@ -966,41 +988,45 @@ def preprocess_worker_folder(
                             and resize_width_before_upscale != 0
                         ):
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     resize_width_before_upscale,
                                     resize_height_before_upscale,
                                 ),
+                                is_grayscale, force_standard_resize
                             )
                         # resize height, keep proportional width
                         elif resize_height_before_upscale != 0:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     round(w * resize_height_before_upscale / h),
                                     resize_height_before_upscale,
                                 ),
+                                is_grayscale, force_standard_resize
                             )
                         # resize width, keep proportional height
                         elif resize_width_before_upscale != 0:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     resize_width_before_upscale,
                                     round(h * resize_width_before_upscale / w),
                                 ),
+                                is_grayscale, force_standard_resize
                             )
                         elif resize_factor_before_upscale != 100:
                             h, w, _ = get_h_w_c(image)
-                            image = standard_resize(
+                            image = image_resize(
                                 image,
                                 (
                                     round(w * resize_factor_before_upscale / 100),
                                     round(h * resize_factor_before_upscale / 100),
                                 ),
+                                is_grayscale, force_standard_resize
                             )
                             
                         # ensure the resized image dimensions are correctly updated    
@@ -1057,7 +1083,7 @@ def preprocess_worker_folder(
                         tile_size_str = chain["ModelTileSize"]
                     else:
                         image = normalize(image)
-                            
+                   
                     # image = np.ascontiguousarray(image)
 
                     upscale_queue.put(
@@ -1071,6 +1097,7 @@ def preprocess_worker_folder(
                             get_tile_size(tile_size_str),
                             model,
                             model_file_path,
+                            force_standard_resize,
                         )
                     )
             elif filename.lower().endswith(ARCHIVE_EXTENSIONS):
@@ -1119,6 +1146,8 @@ def preprocess_worker_image(
         if not overwrite_existing_files and os.path.isfile(output_image_path):
             print(f"file exists, skip: {output_image_path}", flush=True)
             return
+            
+        force_standard_resize = get_force_standard_resize(Path(input_image_path).stem)
 
         os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
         # with Image.open(input_image_path) as img:
@@ -1148,37 +1177,41 @@ def preprocess_worker_image(
             # resize width and height, distorting image
             if resize_height_before_upscale != 0 and resize_width_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
-                    image, (resize_width_before_upscale, resize_height_before_upscale)
+                image = image_resize(
+                    image, (resize_width_before_upscale, resize_height_before_upscale),
+                    is_grayscale, force_standard_resize
                 )
             # resize height, keep proportional width
             elif resize_height_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         round(w * resize_height_before_upscale / h),
                         resize_height_before_upscale,
                     ),
+                    is_grayscale, force_standard_resize
                 )
             # resize width, keep proportional height
             elif resize_width_before_upscale != 0:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         resize_width_before_upscale,
                         round(h * resize_width_before_upscale / w),
                     ),
+                    is_grayscale, force_standard_resize
                 )
             elif resize_factor_before_upscale != 100:
                 h, w, _ = get_h_w_c(image)
-                image = standard_resize(
+                image = image_resize(
                     image,
                     (
                         round(w * resize_factor_before_upscale / 100),
                         round(h * resize_factor_before_upscale / 100),
                     ),
+                    is_grayscale, force_standard_resize
                 )
                 
             # ensure the resized image dimensions are correctly updated    
@@ -1256,6 +1289,7 @@ def preprocess_worker_image(
                 get_tile_size(tile_size_str),
                 model,
                 model_file_path,
+                force_standard_resize,
             )
         )
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -1277,6 +1311,7 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
             model_tile_size,
             model,
             model_file_path,
+            force_standard_resize,
         ) = upscale_queue.get()
         if image is None:
             break
@@ -1304,7 +1339,7 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
                 image = convert_image_to_grayscale(image)
 
         postprocess_queue.put(
-            (image, file_name, is_image, is_grayscale, original_width, original_height)
+            (image, file_name, is_image, is_grayscale, original_width, original_height, force_standard_resize)
         )
     postprocess_queue.put(POSTPROCESS_SENTINEL)
     # print("upscale_worker exiting")
@@ -1319,7 +1354,6 @@ def postprocess_worker_zip(
     target_scale: float,
     target_width: int,
     target_height: int,
-    force_standard_resize: bool = False,
 ) -> None:
     """
     wait for postprocess queue, for each queue entry, save the image to the zip file
@@ -1334,6 +1368,7 @@ def postprocess_worker_zip(
                 is_grayscale,
                 original_width,
                 original_height,
+                force_standard_resize,
             ) = postprocess_queue.get()
             if image is None:
                 break
@@ -1375,9 +1410,15 @@ def postprocess_worker_folder(
     """
     # print("postprocess_worker_folder entering")
     while True:
-        image, file_name, _, is_grayscale, original_width, original_height = (
-            postprocess_queue.get()
-        )
+        (
+            image, 
+            file_name, 
+            _, 
+            is_grayscale, 
+            original_width, 
+            original_height, 
+            force_standard_resize
+        ) = postprocess_queue.get()
         if image is None:
             break
         image = postprocess_image(image)
@@ -1393,6 +1434,7 @@ def postprocess_worker_folder(
             target_width,
             target_height,
             is_grayscale,
+            force_standard_resize,
         )
         print("PROGRESS=postprocess_worker_folder", flush=True)
 
@@ -1413,9 +1455,15 @@ def postprocess_worker_image(
     wait for postprocess queue, for each queue entry, save the image to the output file path
     """
     while True:
-        image, _, _, is_grayscale, original_width, original_height = (
-            postprocess_queue.get()
-        )
+        (
+            image, 
+            _, 
+            _, 
+            is_grayscale, 
+            original_width, 
+            original_height, 
+            force_standard_resize
+        ) = postprocess_queue.get()
         if image is None:
             break
         # image = postprocess_image(image)
@@ -1432,6 +1480,7 @@ def postprocess_worker_image(
             target_width,
             target_height,
             is_grayscale,
+            force_standard_resize,
         )
         print("PROGRESS=postprocess_worker_image", flush=True)
 
@@ -1452,7 +1501,7 @@ def upscale_archive_file(
     # TODO accept multiple paths to reuse simple queues?
     
     input_name = Path(input_zip_path).stem.lower()
-    force_standard_resize = input_name.endswith("(gray)") or input_name.endswith("(gray4)") or input_name.endswith("(gray-2048)") or input_name.endswith("(gray4-2048)")
+    force_standard_resize = get_force_standard_resize(input_name)
 
     upscale_queue = Queue(maxsize=1)
     postprocess_queue = MPQueue(maxsize=1)
@@ -1470,6 +1519,7 @@ def upscale_archive_file(
             chains,
             loaded_models,
             grayscale_detection_threshold,
+            force_standard_resize,
         ),
     )
     preprocess_process.start()
@@ -1492,7 +1542,6 @@ def upscale_archive_file(
             target_scale,
             target_width,
             target_height,
-            force_standard_resize
         ),
     )
     postprocess_process.start()
@@ -1804,8 +1853,8 @@ settings = parse_settings_from_cli()
 workflow = settings["Workflows"]["$values"][settings["SelectedWorkflowIndex"]]
 models_directory = settings["ModelsDirectory"]
 
-UPSCALE_SENTINEL = (None, None, None, None, None, None, None, None, None)
-POSTPROCESS_SENTINEL = (None, None, None, None, None, None)
+UPSCALE_SENTINEL = (None, None, None, None, None, None, None, None, None, None)
+POSTPROCESS_SENTINEL = (None, None, None, None, None, None, None)
 CV2_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 IMAGE_EXTENSIONS = (*CV2_IMAGE_EXTENSIONS, ".avif")
 ZIP_EXTENSIONS = (".zip", ".cbz")
