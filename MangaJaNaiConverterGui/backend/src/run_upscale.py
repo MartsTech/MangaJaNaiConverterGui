@@ -247,18 +247,39 @@ def dotgain20_resize(image: np.ndarray, new_size: tuple[int, int]) -> np.ndarray
         
     print(f"Applying dotgain20_resize to {new_size}", flush=True)
     
-    size_ratio = h / new_size[1]
-    blur_size = (1 / size_ratio - 1) / 3.5
-    if blur_size >= 0.1:
-        blur_size = min(blur_size, 250)
+    shrink_factor = h / new_size[1]
+    
+    # NEW LOGIC: Check if the shrink factor is essentially a perfect integer (e.g., 2.0, 3.0)
+    # Using a small tolerance (0.01) to account for floating point inaccuracies
+    is_integer_shrink = abs(shrink_factor - round(shrink_factor)) < 0.01
+    
+    # Determine filter and blur dynamically
+    if is_integer_shrink:
+        blur_size = 0  # No blur needed for perfect integers
+        chosen_filter = ResizeFilter.Box
+        print(f"Exact integer downscale detected (~{round(shrink_factor)}x). Using Box filter with no blur.", flush=True)
+    else:
+        blur_size = (shrink_factor - 1) / 3.5
+        if blur_size >= 0.1:
+            blur_size = min(blur_size, 250)
+        else:
+            blur_size = 0
+        chosen_filter = ResizeFilter.CubicCatrom
+        print(f"Fractional downscale detected. Using Catrom filter with blur radius {blur_size:.2f}.", flush=True)
 
     pil_image = Image.fromarray(image, mode="L")
-    pil_image = pil_image.filter(ImageFilter.GaussianBlur(radius=blur_size))
+    
+    if blur_size > 0:
+        pil_image = pil_image.filter(ImageFilter.GaussianBlur(radius=blur_size))
+        
     pil_image = ImageCms.applyTransform(pil_image, dotgain20togamma1transform, False)
 
     new_image = np.array(pil_image)
     new_image = new_image.astype(np.float32) / 255.0
-    new_image = resize(new_image, new_size, ResizeFilter.CubicCatrom, False)
+    
+    # Apply the dynamically chosen filter
+    new_image = resize(new_image, new_size, chosen_filter, False)
+    
     new_image = (new_image * 255).round().astype(np.uint8)
 
     pil_image = Image.fromarray(new_image[:, :, 0], mode="L")
