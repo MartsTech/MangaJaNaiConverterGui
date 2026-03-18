@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from collections import Counter
 from io import BytesIO
 from pathlib import Path
 from queue import Queue
@@ -122,6 +123,93 @@ def get_tile_size(tile_size_str: str) -> TileSize:
         return TileSize(int(tile_size_str))
 
     return ESTIMATE
+
+# --- DYNAMIC SMART PADDING ---
+def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int) -> np.ndarray:
+    """
+    Calculates and applies exact edge padding so the canvas is perfectly 
+    divisible by both the pre-upscale fraction and the post-upscale fraction.
+    This operates on the raw uncompressed NumPy array in memory, making it 100% lossless.
+    """
+    h, w = image.shape[:2]
+
+    def get_required_padding(dim):
+        # Future-proof math: the maximum padding needed to satisfy both divisions
+        # is strictly bounded by the product of the two divisors.
+        max_search_space = max(50, (d_pre * d_post) + 1)
+        for pad in range(max_search_space):
+            new_dim = dim + pad
+            if new_dim % d_pre == 0:
+                up_dim = (new_dim // d_pre) * 4
+                if up_dim % d_post == 0:
+                    return pad
+        return 0
+
+    pad_w = get_required_padding(w)
+    pad_h = get_required_padding(h)
+
+    if pad_w == 0 and pad_h == 0:
+        return image
+
+    def get_dominant_freq(edge_array):
+        # edge_array shape: Grayscale [Length], Color [Length, Channels]
+        if edge_array.ndim == 2:
+            pixels = [tuple(p) for p in edge_array]
+        else:
+            pixels = edge_array.tolist()
+        counts = Counter(pixels)
+        return counts.most_common(1)[0][1] if counts else 0
+
+    top_pad = bottom_pad = left_pad = right_pad = 0
+
+    # Handle Width Padding
+    if pad_w > 0:
+        if pad_w % 2 == 0:
+            left_pad = right_pad = pad_w // 2
+        else:
+            freq_l = get_dominant_freq(image[:, 0])
+            freq_r = get_dominant_freq(image[:, -1])
+            half = pad_w // 2
+            if freq_l > freq_r:
+                left_pad = half + 1
+                right_pad = half
+            else:
+                right_pad = half + 1
+                left_pad = half
+
+    # Handle Height Padding
+    if pad_h > 0:
+        if pad_h % 2 == 0:
+            top_pad = bottom_pad = pad_h // 2
+        else:
+            freq_t = get_dominant_freq(image[0, :])
+            freq_b = get_dominant_freq(image[-1, :])
+            half = pad_h // 2
+            if freq_t > freq_b:
+                top_pad = half + 1
+                bottom_pad = half
+            else:
+                bottom_pad = half + 1
+                top_pad = half
+
+    # Apply padding losslessly using BORDER_REPLICATE
+    padded_image = cv2.copyMakeBorder(
+        image, top_pad, bottom_pad, left_pad, right_pad, cv2.BORDER_REPLICATE
+    )
+    
+    print("\n" + "="*40, flush=True)
+    print("--- SMART PADDING TRIGGERED ---", flush=True)
+    print(f"Original Canvas: {w}x{h}", flush=True)
+    print(f"Target Fractions: Downscale-Before = 1/{d_pre}, Downscale-After = 1/{d_post}", flush=True)
+    print(f"Padding Added:", flush=True)
+    if pad_w > 0:
+        print(f"  -> Width:  +{pad_w}px (Left: {left_pad}px, Right: {right_pad}px)", flush=True)
+    if pad_h > 0:
+        print(f"  -> Height: +{pad_h}px (Top: {top_pad}px, Bottom: {bottom_pad}px)", flush=True)
+    print(f"New Canvas: {w+pad_w}x{h+pad_h}", flush=True)
+    print("="*40 + "\n", flush=True)
+    
+    return padded_image
 
 
 def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
@@ -786,6 +874,25 @@ def preprocess_worker_archive_file(
                 tile_size_str = ""
                 model_file_path = None
                 if chain is not None:
+                    # --- SMART PADDING INJECTION ---
+                    current_target_scale = target_scale
+                    if current_target_scale is None:
+                        if target_height != 0:
+                            current_target_scale = target_height / original_height
+                        elif target_width != 0:
+                            current_target_scale = target_width / original_width
+                        else:
+                            current_target_scale = 2.0 # fallback
+                    
+                    resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+                    d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
+                    d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+
+                    image = add_smart_padding(image, d_pre, d_post)
+                    # Update dimensions to native canvas size so script logic flows perfectly
+                    original_height, original_width, _ = get_h_w_c(image)
+                    # -------------------------------
+
                     model_file_path = chain["ModelFilePath"]
                     resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                     resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
@@ -826,14 +933,17 @@ def preprocess_worker_archive_file(
                         )
                     elif resize_factor_before_upscale != 100:
                         h, w, _ = get_h_w_c(image)
+                        # --- OVERRIDE FOR PERFECT FRACTIONS ---
+                        d_pre_clean = max(1, round(100.0 / resize_factor_before_upscale))
                         image = image_resize(
                             image,
                             (
-                                round(w * resize_factor_before_upscale / 100),
-                                round(h * resize_factor_before_upscale / 100),
+                                w // d_pre_clean,
+                                h // d_pre_clean,
                             ),
                             is_grayscale, force_standard_resize
                         )
+                        # --------------------------------------
                     
                     # ensure the resized image dimensions are correctly updated    
                     original_height, original_width, _ = get_h_w_c(image) 
@@ -994,6 +1104,24 @@ def preprocess_worker_folder(
                     tile_size_str = ""
                     model_file_path = None
                     if chain is not None:
+                        # --- SMART PADDING INJECTION ---
+                        current_target_scale = target_scale
+                        if current_target_scale is None:
+                            if target_height != 0:
+                                current_target_scale = target_height / original_height
+                            elif target_width != 0:
+                                current_target_scale = target_width / original_width
+                            else:
+                                current_target_scale = 2.0 
+                        
+                        resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+                        d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
+                        d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+
+                        image = add_smart_padding(image, d_pre, d_post)
+                        original_height, original_width, _ = get_h_w_c(image)
+                        # -------------------------------
+
                         model_file_path = chain["ModelFilePath"]
                         resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                         resize_height_before_upscale = chain[
@@ -1041,14 +1169,17 @@ def preprocess_worker_folder(
                             )
                         elif resize_factor_before_upscale != 100:
                             h, w, _ = get_h_w_c(image)
+                            # --- OVERRIDE FOR PERFECT FRACTIONS ---
+                            d_pre_clean = max(1, round(100.0 / resize_factor_before_upscale))
                             image = image_resize(
                                 image,
                                 (
-                                    round(w * resize_factor_before_upscale / 100),
-                                    round(h * resize_factor_before_upscale / 100),
+                                    w // d_pre_clean,
+                                    h // d_pre_clean,
                                 ),
                                 is_grayscale, force_standard_resize
                             )
+                            # --------------------------------------
                             
                         # ensure the resized image dimensions are correctly updated    
                         original_height, original_width, _ = get_h_w_c(image) 
@@ -1190,6 +1321,24 @@ def preprocess_worker_image(
         tile_size_str = ""
         model_file_path = None
         if chain is not None:
+            # --- SMART PADDING INJECTION ---
+            current_target_scale = target_scale
+            if current_target_scale is None:
+                if target_height != 0:
+                    current_target_scale = target_height / original_height
+                elif target_width != 0:
+                    current_target_scale = target_width / original_width
+                else:
+                    current_target_scale = 2.0 
+            
+            resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+            d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
+            d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+
+            image = add_smart_padding(image, d_pre, d_post)
+            original_height, original_width, _ = get_h_w_c(image)
+            # -------------------------------
+
             model_file_path = chain["ModelFilePath"]
             resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
             resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
@@ -1226,14 +1375,17 @@ def preprocess_worker_image(
                 )
             elif resize_factor_before_upscale != 100:
                 h, w, _ = get_h_w_c(image)
+                # --- OVERRIDE FOR PERFECT FRACTIONS ---
+                d_pre_clean = max(1, round(100.0 / resize_factor_before_upscale))
                 image = image_resize(
                     image,
                     (
-                        round(w * resize_factor_before_upscale / 100),
-                        round(h * resize_factor_before_upscale / 100),
+                        w // d_pre_clean,
+                        h // d_pre_clean,
                     ),
                     is_grayscale, force_standard_resize
                 )
+                # --------------------------------------
                 
             # ensure the resized image dimensions are correctly updated    
             original_height, original_width, _ = get_h_w_c(image) 
