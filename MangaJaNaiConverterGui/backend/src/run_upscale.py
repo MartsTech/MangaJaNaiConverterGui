@@ -4,6 +4,7 @@ import io
 import json
 import os
 import platform
+import re
 import sys
 import threading
 import time
@@ -125,7 +126,7 @@ def get_tile_size(tile_size_str: str) -> TileSize:
     return ESTIMATE
 
 # --- DYNAMIC SMART PADDING ---
-def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int) -> np.ndarray:
+def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int, native_scale: int) -> np.ndarray:
     """
     Calculates and applies exact edge padding so the canvas is perfectly 
     divisible by both the pre-upscale fraction and the post-upscale fraction.
@@ -140,7 +141,7 @@ def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int) -> np.ndarray:
         for pad in range(max_search_space):
             new_dim = dim + pad
             if new_dim % d_pre == 0:
-                up_dim = (new_dim // d_pre) * 4
+                up_dim = (new_dim // d_pre) * native_scale  # Dynamic based on actual model behavior
                 if up_dim % d_post == 0:
                     return pad
         return 0
@@ -200,6 +201,7 @@ def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int) -> np.ndarray:
     print("\n" + "="*40, flush=True)
     print("--- SMART PADDING TRIGGERED ---", flush=True)
     print(f"Original Canvas: {w}x{h}", flush=True)
+    print(f"Native Model Scale: {native_scale}x", flush=True)
     print(f"Target Fractions: Downscale-Before = 1/{d_pre}, Downscale-After = 1/{d_post}", flush=True)
     print(f"Padding Added:", flush=True)
     if pad_w > 0:
@@ -874,6 +876,8 @@ def preprocess_worker_archive_file(
                 tile_size_str = ""
                 model_file_path = None
                 if chain is not None:
+                    model_file_path = chain.get("ModelFilePath", "")
+                    
                     # --- SMART PADDING INJECTION ---
                     current_target_scale = target_scale
                     if current_target_scale is None:
@@ -882,18 +886,40 @@ def preprocess_worker_archive_file(
                         elif target_width != 0:
                             current_target_scale = target_width / original_width
                         else:
-                            current_target_scale = 2.0 # fallback
+                            current_target_scale = 2.0 
                     
-                    resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+                    resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
                     d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
-                    d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+                    
+                    # Predict exact final dimensions to calculate perfect d_post divisor
+                    pred_pre_h = original_height / d_pre
+                    
+                    # Dynamically detect native model scale based on filename prefix
+                    model_filename = Path(model_file_path).name if model_file_path else ""
+                    scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
+                    if scale_match:
+                        native_model_scale = int(scale_match.group(1))
+                        print(f"[Smart Padding] Detected native model scale {native_model_scale}x from filename: '{model_filename}'", flush=True)
+                    else:
+                        native_model_scale = 1
+                        print(f"[Smart Padding] Could not detect native scale from filename '{model_filename}'. Defaulting to {native_model_scale}x.", flush=True)
+                        
+                    pred_up_h = pred_pre_h * native_model_scale
+                    
+                    if target_height != 0:
+                        pred_final_h = target_height
+                    elif target_width != 0:
+                        pred_final_h = original_height * (target_width / original_width)
+                    else:
+                        pred_final_h = pred_pre_h * current_target_scale
+                        
+                    d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-                    image = add_smart_padding(image, d_pre, d_post)
+                    image = add_smart_padding(image, d_pre, d_post, native_model_scale)
                     # Update dimensions to native canvas size so script logic flows perfectly
                     original_height, original_width, _ = get_h_w_c(image)
                     # -------------------------------
 
-                    model_file_path = chain["ModelFilePath"]
                     resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                     resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
                     resize_factor_before_upscale = chain["ResizeFactorBeforeUpscale"]
@@ -1104,6 +1130,8 @@ def preprocess_worker_folder(
                     tile_size_str = ""
                     model_file_path = None
                     if chain is not None:
+                        model_file_path = chain.get("ModelFilePath", "")
+                        
                         # --- SMART PADDING INJECTION ---
                         current_target_scale = target_scale
                         if current_target_scale is None:
@@ -1114,15 +1142,37 @@ def preprocess_worker_folder(
                             else:
                                 current_target_scale = 2.0 
                         
-                        resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+                        resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
                         d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
-                        d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+                        
+                        # Predict exact final dimensions to calculate perfect d_post divisor
+                        pred_pre_h = original_height / d_pre
+                        
+                        # Dynamically detect native model scale based on filename prefix
+                        model_filename = Path(model_file_path).name if model_file_path else ""
+                        scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
+                        if scale_match:
+                            native_model_scale = int(scale_match.group(1))
+                            print(f"[Smart Padding] Detected native model scale {native_model_scale}x from filename: '{model_filename}'", flush=True)
+                        else:
+                            native_model_scale = 1
+                            print(f"[Smart Padding] Could not detect native scale from filename '{model_filename}'. Defaulting to {native_model_scale}x.", flush=True)
+                            
+                        pred_up_h = pred_pre_h * native_model_scale
+                        
+                        if target_height != 0:
+                            pred_final_h = target_height
+                        elif target_width != 0:
+                            pred_final_h = original_height * (target_width / original_width)
+                        else:
+                            pred_final_h = pred_pre_h * current_target_scale
+                            
+                        d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-                        image = add_smart_padding(image, d_pre, d_post)
+                        image = add_smart_padding(image, d_pre, d_post, native_model_scale)
                         original_height, original_width, _ = get_h_w_c(image)
                         # -------------------------------
 
-                        model_file_path = chain["ModelFilePath"]
                         resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
                         resize_height_before_upscale = chain[
                             "ResizeHeightBeforeUpscale"
@@ -1321,6 +1371,8 @@ def preprocess_worker_image(
         tile_size_str = ""
         model_file_path = None
         if chain is not None:
+            model_file_path = chain.get("ModelFilePath", "")
+            
             # --- SMART PADDING INJECTION ---
             current_target_scale = target_scale
             if current_target_scale is None:
@@ -1331,15 +1383,37 @@ def preprocess_worker_image(
                 else:
                     current_target_scale = 2.0 
             
-            resize_factor_before = chain["ResizeFactorBeforeUpscale"]
+            resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
             d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
-            d_post = max(1, round(4.0 / (d_pre * current_target_scale))) if current_target_scale > 0 else 1
+            
+            # Predict exact final dimensions to calculate perfect d_post divisor
+            pred_pre_h = original_height / d_pre
+            
+            # Dynamically detect native model scale based on filename prefix
+            model_filename = Path(model_file_path).name if model_file_path else ""
+            scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
+            if scale_match:
+                native_model_scale = int(scale_match.group(1))
+                print(f"[Smart Padding] Detected native model scale {native_model_scale}x from filename: '{model_filename}'", flush=True)
+            else:
+                native_model_scale = 1
+                print(f"[Smart Padding] Could not detect native scale from filename '{model_filename}'. Defaulting to {native_model_scale}x.", flush=True)
+                
+            pred_up_h = pred_pre_h * native_model_scale
+            
+            if target_height != 0:
+                pred_final_h = target_height
+            elif target_width != 0:
+                pred_final_h = original_height * (target_width / original_width)
+            else:
+                pred_final_h = pred_pre_h * current_target_scale
+                
+            d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-            image = add_smart_padding(image, d_pre, d_post)
+            image = add_smart_padding(image, d_pre, d_post, native_model_scale)
             original_height, original_width, _ = get_h_w_c(image)
             # -------------------------------
 
-            model_file_path = chain["ModelFilePath"]
             resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
             resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
             resize_factor_before_upscale = chain["ResizeFactorBeforeUpscale"]
