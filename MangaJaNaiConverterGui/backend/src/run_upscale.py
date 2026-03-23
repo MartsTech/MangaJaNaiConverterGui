@@ -847,7 +847,7 @@ def preprocess_worker_archive_file(
 ) -> None:
     """
     given an input zip or rar archive, read images out of the archive, apply auto levels, add the image to upscale queue.
-    Includes smart pre-upscale Webtoon splicing with optimal math rounding and majority voting.
+    Includes smart pre-upscale Webtoon splicing with optimal math rounding, majority voting, and metadata preservation.
     """
     import math
     import re
@@ -1110,7 +1110,6 @@ def preprocess_worker_archive_file(
                     grid_step += 1
 
                 # --- MAJORITY VOTE FOR WIDTH PADDING ---
-                # Only run the scan if odd width padding is actually required by the math
                 pad_w = 0
                 max_w_search_space = max(50, (d_pre * d_post) + 1)
                 for pad in range(max_w_search_space):
@@ -1187,10 +1186,8 @@ def preprocess_worker_archive_file(
                             # OPTION A: The absolute end chunk takes ONLY the loss.
                             h += loss_px
                         elif i >= (num_splits - 1 - staggered_step_boost):
-                            # Stagger the full +grid_step blocks to the chunks BEFORE the last one
                             h += grid_step
                     else:
-                        # If there is no loss, stagger normally to the end
                         if i >= (num_splits - staggered_step_boost):
                             h += grid_step
                             
@@ -1204,7 +1201,6 @@ def preprocess_worker_archive_file(
 
                 buffer_img = None
                 output_index = 0
-                clean_archive_stem = re.sub(r'(?i)\s*\(Webtoon\)$', '', archive_stem)
                 
                 def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
                     """Safely aligns image channels for seamless np.vstack."""
@@ -1216,6 +1212,35 @@ def preprocess_worker_archive_file(
                     if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
                     if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
                     return im
+
+                # METADATA PRESERVATION LOGIC
+                first_image_stem = Path(image_namelist[0]).stem
+
+                def get_new_filename(base_name: str, index: int) -> str:
+                    """Preserves metadata by only updating the p### tag."""
+                    parts = re.split(r'(-| )', base_name)
+                    replaced = False
+                    index_str = str(index)
+                    
+                    for i in range(len(parts) - 1, -1, -1):
+                        part = parts[i]
+                        if not part or part in ('-', ' '):
+                            continue
+                        
+                        match = re.match(r'^(\D*)(\d+)$', part)
+                        if match:
+                            prefix = match.group(1)
+                            number_str = match.group(2)
+                            pad_length = max(len(number_str), 3)
+                            parts[i] = f"{prefix}{index_str.zfill(pad_length)}"
+                            replaced = True
+                            break
+                            
+                    if replaced:
+                        return "".join(parts)
+                        
+                    fallback_base = re.sub(r'\d+$', '', base_name)
+                    return f"{fallback_base}{index_str.zfill(3)}"
 
                 # Pass 2: The Rolling Memory Buffer
                 for filename in image_namelist:
@@ -1242,7 +1267,10 @@ def preprocess_worker_archive_file(
                                 else:
                                     buffer_img = buffer_img[target_h:, :, :]
                                     
-                                chunk_filename = f"{clean_archive_stem}-{output_index + 1:03d}.png"
+                                # Create filename preserving original metadata (Title, web, Kagane, etc)
+                                new_stem = get_new_filename(first_image_stem, output_index + 1)
+                                chunk_filename = f"{new_stem}.png"
+                                
                                 print(f"[Webtoon] Spliced Chunk {output_index + 1}/{num_splits} -> {chunk_filename}", flush=True)
                                 
                                 # Send to queue. Passing the voted majority padding side
@@ -1290,21 +1318,17 @@ def preprocess_worker_archive_file(
             with input_archive.open(filename) as file_in_archive:
                 image_data = file_in_archive.read()
                 
-                # EXACT ORIGINAL LOGIC: Try to read everything as an image. 
-                # If pyvips can't read it (like a .txt file), it correctly throws to the except block.
                 image = _read_image(image_data, filename)
                 print("read image", filename, flush=True)
                 
-                # Normal processing uses default dynamic padding
                 process_and_queue_image(image, decoded_filename, is_webtoon_chunk=False)
                 
         except Exception as e:
-            # Matches original logic perfectly: catches non-images and copies them over cleanly.
             print(f"could not read as image, copying file to zip instead of upscaling: {decoded_filename}, {e}", flush=True)
             upscale_queue.put((image_data, decoded_filename, False, False, None, None, None, None, None, force_standard_resize))
             
     upscale_queue.put(UPSCALE_SENTINEL)
-   
+  
 
 def preprocess_worker_folder(
     upscale_queue: Queue,
