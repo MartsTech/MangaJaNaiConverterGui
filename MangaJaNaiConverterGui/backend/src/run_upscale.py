@@ -1033,7 +1033,7 @@ def preprocess_worker_archive_file(
     # CORE ROUTING & WEBTOON LOGIC
     # ==========================================
     archive_stem = Path(input_archive.filename).stem if hasattr(input_archive, "filename") and input_archive.filename else "Archive"
-    is_webtoon = "(webtoon)" in archive_stem.lower()
+    is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', archive_stem))
     
     image_namelist = [f for f in namelist if f.lower().endswith(IMAGE_EXTENSIONS)]
     image_namelist.sort(key=natural_sort_key)
