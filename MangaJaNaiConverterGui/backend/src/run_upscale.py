@@ -1178,24 +1178,8 @@ def preprocess_worker_archive_file(
                     print(f"[Webtoon] Vote complete -> Left: {left_votes} | Right: {right_votes}. Forcing padding to the {majority_pad_side}.", flush=True)
 
 
-                # --- OPTIMAL SPLICING MATHEMATICS ---
-                is_exact_dimension_mode = (target_width > 0 and target_height > 0)
-
-                if is_exact_dimension_mode:
-                    ideal_chunk_h = round((target_height * first_w) / target_width)
-                    num_splits = math.ceil(total_input_h / ideal_chunk_h)
-                    if num_splits == 0: num_splits = 1
-
-                    chunk_heights = [ideal_chunk_h] * num_splits
-                    
-                    print(f"\n[Webtoon] Exact Dimension Mode Active:", flush=True)
-                    print(f"  -> Target Output: {target_width}x{target_height}", flush=True)
-                    print(f"  -> Calculated Raw Chunk Height: {ideal_chunk_h}px", flush=True)
-                    print(f"  -> Splits: {num_splits} (Final chunk will be padded by {sum(chunk_heights) - total_input_h}px to match)", flush=True)
-
-                else:
-                   # --- CALCULATE GRID STEP (REQUIRED FOR ALL MODES) ---
-                    from fractions import Fraction
+                # --- CALCULATE GRID STEP (REQUIRED FOR ALL MODES) ---
+                from fractions import Fraction
                 
                 # Calculate EXACT Grid Step using fractions to guarantee zero sub-pixel seam bleeding
                 if target_width != 0:
@@ -1215,26 +1199,34 @@ def preprocess_worker_archive_file(
                 is_exact_dimension_mode = (target_width > 0 and target_height > 0)
 
                 if is_exact_dimension_mode:
-                    # Logic for Intermediate Chunks: Snap to grid step
+                    # Logic for Exact Dimension Mode with Minimal Padding for the last chunk
                     raw_ideal_h = (target_height * first_w) / target_width
                     ideal_chunk_h = round(raw_ideal_h / grid_step) * grid_step
-                    if ideal_chunk_h == 0: ideal_chunk_h = grid_step
+                    if ideal_chunk_h <= 0: ideal_chunk_h = grid_step
 
                     num_splits = math.ceil(total_input_h / ideal_chunk_h)
                     if num_splits == 0: num_splits = 1
 
-                    # Intermediate chunks take the ideal height
-                    chunk_heights = [ideal_chunk_h] * (num_splits - 1)
+                    chunk_heights = []
+                    for i in range(num_splits - 1):
+                        chunk_heights.append(ideal_chunk_h)
                     
-                    # Final chunk placeholder (will be snapped dynamically in the final block)
-                    chunk_heights.append(total_input_h - sum(chunk_heights))
+                    remainder_h = total_input_h - sum(chunk_heights)
+                    if remainder_h > 0:
+                        snapped_remainder = math.ceil(remainder_h / grid_step) * grid_step
+                        if snapped_remainder == 0: snapped_remainder = grid_step
+                        chunk_heights.append(snapped_remainder)
                     
                     print(f"\n[Webtoon] Exact Dimension Mode Active (Minimal Padding):", flush=True)
-                    print(f"  -> Intermediate Chunk H: {ideal_chunk_h}px | Grid Step: {grid_step}px", flush=True)
-                    print(f"  -> Splits: {num_splits}", flush=True)
+                    print(f"  -> Target Output: {target_width}x{target_height} (Grid Step: {grid_step}px)", flush=True)
+                    print(f"  -> Calculated Raw Chunk Height: {ideal_chunk_h}px", flush=True)
+                    if len(chunk_heights) > 1:
+                        print(f"  -> Splits: {num_splits - 1} full chunks, 1 final chunk of {chunk_heights[-1]}px (padded by {chunk_heights[-1] - remainder_h}px)", flush=True)
+                    else:
+                        print(f"  -> Splits: 1 chunk of {chunk_heights[-1]}px (padded by {chunk_heights[-1] - remainder_h}px)", flush=True)
 
                 else:
-                    # [KEEP EXISTING OPTION A EQUALIZER LOGIC FOR NON-EXACT MODE]
+                    # TARGET_ASPECT_RATIO fallback
                     TARGET_ASPECT_RATIO_W = 36
                     TARGET_ASPECT_RATIO_H = 125
                     ideal_chunk_h = round((first_w * TARGET_ASPECT_RATIO_H) / TARGET_ASPECT_RATIO_W)
@@ -1242,19 +1234,15 @@ def preprocess_worker_archive_file(
                     num_splits = math.ceil(total_input_h / ideal_chunk_h)
                     if num_splits == 0: num_splits = 1
 
-                    # 1. Base standard height, SNAP DOWN to nearest grid step
                     base_h = total_input_h // num_splits
                     snapped_h = (base_h // grid_step) * grid_step
                     if snapped_h == 0: snapped_h = grid_step
 
-                    # 2. Inflated remainder pool
                     remainder = total_input_h - (num_splits * snapped_h)
 
-                    # 3. Calculate additions
                     step_additions = remainder // grid_step
                     loss_px = remainder % grid_step 
 
-                    # 4. Distribute (The "Option A" Equalizer Logic)
                     global_step_boost = step_additions // num_splits
                     staggered_step_boost = step_additions % num_splits
 
@@ -1335,7 +1323,6 @@ def preprocess_worker_archive_file(
                                 buffer_img = np.vstack((force_c(buffer_img, max_c), force_c(img, max_c)))
                                 
                             while output_index < len(chunk_heights):
-                                # Fix for Turn 14's 'NoneType' shape error
                                 if buffer_img is None:
                                     break
                                     
@@ -1365,24 +1352,19 @@ def preprocess_worker_archive_file(
                     except Exception as e:
                         print(f"[Webtoon] ERROR processing '{filename}': {e}", flush=True)
 
-                # NEW: Handle the final padded chunk for Exact Dimension Mode (MINIMAL PADDING)
+                # NEW: Handle the final padded chunk for Exact Dimension Mode
                 if is_exact_dimension_mode and output_index < len(chunk_heights) and buffer_img is not None and buffer_img.shape[0] > 0:
-                    actual_h = buffer_img.shape[0]
-                    remainder = actual_h % grid_step
-                    
-                    # Snap the target height to the nearest safe multiple of grid_step
-                    target_h = actual_h + (grid_step - remainder) if remainder != 0 else actual_h
-                    missing_h = target_h - actual_h
+                    target_h = chunk_heights[output_index]
+                    missing_h = target_h - buffer_img.shape[0]
                     
                     if missing_h > 0:
-                        print(f"[Webtoon] Exact Mode: Minimal padding final chunk by {missing_h}px (Grid step: {grid_step}px) to reach {target_h}px.", flush=True)
+                        print(f"[Webtoon] Exact Mode: Seamlessly padding final chunk by {missing_h}px to reach {target_h}px.", flush=True)
                         buffer_img = cv2.copyMakeBorder(buffer_img, 0, missing_h, 0, 0, cv2.BORDER_REPLICATE)
-                    else:
-                        print(f"[Webtoon] Exact Mode: Final chunk matches grid step at {target_h}px. No padding needed.", flush=True)
                         
                     chunk = buffer_img
                     new_stem = get_new_filename(first_image_stem, output_index + 1)
                     chunk_filename = f"{new_stem}.png"
+                    print(f"[Webtoon] Spliced Chunk {output_index + 1}/{num_splits} -> {chunk_filename}", flush=True)
                     
                     process_and_queue_image(
                         chunk, 
@@ -2017,6 +1999,7 @@ def postprocess_worker_zip(
             if image is None:
                 break
             if is_image:
+                # image = postprocess_image(image)
                 save_image_zip(
                     image,
                     str(Path(file_name).with_suffix(f".{image_format}")),
@@ -2052,6 +2035,7 @@ def postprocess_worker_folder(
     """
     wait for postprocess queue, for each queue entry, save the image to the output folder
     """
+    # print("postprocess_worker_folder entering")
     while True:
         (
             image, 
@@ -2086,6 +2070,8 @@ def postprocess_worker_folder(
         )
         print("PROGRESS=postprocess_worker_folder", flush=True)
 
+    # print("postprocess_worker_folder exiting")
+
 
 def postprocess_worker_image(
     postprocess_queue: Queue,
@@ -2115,6 +2101,7 @@ def postprocess_worker_image(
         ) = postprocess_queue.get()
         if image is None:
             break
+        # image = postprocess_image(image)
 
         save_image(
             image,
