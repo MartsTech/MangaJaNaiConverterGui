@@ -269,7 +269,15 @@ def apply_wavelet_color_fix(
     and target_img (upscaled) as the content reference.
     """
     device_idx = settings_parser.get_int("accelerator_device_index", 0)
-    device = torch.device(f"cuda:{device_idx}" if torch.cuda.is_available() else "cpu")
+    
+    if torch.cuda.is_available():
+        # DOCKER FIX: If PyTorch sees fewer GPUs than the requested index 
+        # (due to CUDA_VISIBLE_DEVICES), map it back to 0 to prevent crashes.
+        if device_idx >= torch.cuda.device_count():
+            device_idx = 0
+        device = torch.device(f"cuda:{device_idx}")
+    else:
+        device = torch.device("cpu")
 
     target_h, target_w, _ = get_h_w_c(target_img)
 
@@ -1302,6 +1310,9 @@ def preprocess_worker_archive_file(
                                 buffer_img = np.vstack((force_c(buffer_img, max_c), force_c(img, max_c)))
                                 
                             while output_index < len(chunk_heights):
+                                if buffer_img is None:
+                                    break
+                                    
                                 target_h = chunk_heights[output_index]
                                 if buffer_img.shape[0] < target_h:
                                     break
@@ -1924,7 +1935,15 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
                         image = apply_wavelet_color_fix(image, original_for_fix, levels=5)
                         print("Applied Wavelet Color Fix", flush=True)
                     except Exception as e:
-                        print(f"Failed to apply Wavelet Color Fix: {e}", flush=True)
+                        error_msg = f"Failed to apply Wavelet Color Fix: {e}"
+                        print(error_msg, flush=True)
+                        # HARD LOGGING: Write to error.log on the device so you don't miss it
+                        try:
+                            import time
+                            with open("/workspace/error.log", "a", encoding="utf-8") as err_file:
+                                err_file.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {error_msg}\n")
+                        except Exception as log_e:
+                            print(f"Could not write to error.log: {log_e}", flush=True)
 
             # convert back to grayscale
             if is_grayscale:
