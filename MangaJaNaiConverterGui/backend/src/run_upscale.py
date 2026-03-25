@@ -680,8 +680,31 @@ def final_target_resize(
     original_width: int,
     original_height: int,
     is_grayscale: bool,
-    force_standard_resize: bool = False
+    force_standard_resize: bool = False,
+    is_webtoon: bool = False,
 ) -> np.ndarray:
+    
+    # --- WEBTOON EXACT DIMENSION OVERRIDE ---
+    if is_webtoon and target_width > 0 and target_height > 0:
+        expected_h = original_height * (target_width / original_width)
+        
+        # If the expected height is within a safe margin of target_height, it's a full chunk
+        # that suffered from mathematical grid_step snapping. Stretch it perfectly to bounds.
+        if abs(expected_h - target_height) <= max(50.0, target_height * 0.05):
+            h, w, _ = get_h_w_c(image)
+            if h != target_height or w != target_width:
+                return image_resize(image, (target_width, target_height), is_grayscale, force_standard_resize)
+            return image
+        else:
+            # This is the final minimal-padded remainder chunk.
+            # Enforce width only and let height fall to its exact, clean mathematical integer.
+            h, w, _ = get_h_w_c(image)
+            expected_h_int = round(expected_h)
+            if w != target_width or h != expected_h_int:
+                return image_resize(image, (target_width, expected_h_int), is_grayscale, force_standard_resize)
+            return image
+    # ----------------------------------------
+
     # fit to dimensions
     if target_height != 0 and target_width != 0:
         h, w, _ = get_h_w_c(image)
@@ -748,6 +771,7 @@ def save_image_zip(
         original_height,
         is_grayscale,
         force_standard_resize,
+        is_webtoon,
     )
 
     # Convert the resized image back to bytes
@@ -795,6 +819,7 @@ def save_image(
         original_height,
         is_grayscale,
         force_standard_resize,
+        is_webtoon,
     )
 
     args = {"Q": int(lossy_compression_quality)}
@@ -1177,7 +1202,6 @@ def preprocess_worker_archive_file(
                         
                     print(f"[Webtoon] Vote complete -> Left: {left_votes} | Right: {right_votes}. Forcing padding to the {majority_pad_side}.", flush=True)
 
-
                 # --- CALCULATE GRID STEP (REQUIRED FOR ALL MODES) ---
                 from fractions import Fraction
                 
@@ -1352,19 +1376,20 @@ def preprocess_worker_archive_file(
                     except Exception as e:
                         print(f"[Webtoon] ERROR processing '{filename}': {e}", flush=True)
 
-                # NEW: Handle the final padded chunk for Exact Dimension Mode
+                # NEW: Handle the final padded chunk for Exact Dimension Mode (Minimal Padding)
                 if is_exact_dimension_mode and output_index < len(chunk_heights) and buffer_img is not None and buffer_img.shape[0] > 0:
-                    target_h = chunk_heights[output_index]
-                    missing_h = target_h - buffer_img.shape[0]
+                    actual_h = buffer_img.shape[0]
+                    remainder = actual_h % grid_step
+                    
+                    target_h = actual_h + (grid_step - remainder) if remainder != 0 else actual_h
+                    missing_h = target_h - actual_h
                     
                     if missing_h > 0:
-                        print(f"[Webtoon] Exact Mode: Seamlessly padding final chunk by {missing_h}px to reach {target_h}px.", flush=True)
                         buffer_img = cv2.copyMakeBorder(buffer_img, 0, missing_h, 0, 0, cv2.BORDER_REPLICATE)
                         
                     chunk = buffer_img
                     new_stem = get_new_filename(first_image_stem, output_index + 1)
                     chunk_filename = f"{new_stem}.png"
-                    print(f"[Webtoon] Spliced Chunk {output_index + 1}/{num_splits} -> {chunk_filename}", flush=True)
                     
                     process_and_queue_image(
                         chunk, 
@@ -1982,6 +2007,8 @@ def postprocess_worker_zip(
     """
     wait for postprocess queue, for each queue entry, save the image to the zip file
     """
+    # print("postprocess_worker_zip entering")
+    
     # Detect if the destination ZIP is a webtoon using regex on the filename
     is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(output_zip_path).stem))
 
