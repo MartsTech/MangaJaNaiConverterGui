@@ -551,7 +551,7 @@ def get_chain_for_image(
     target_height: int,
     chains: list[dict[str, Any]],
     grayscale_detection_threshold: int,
-) -> tuple[dict[str, Any], bool, int, int] | tuple[None, None, int, int]:
+) -> tuple[dict[str, Any] | None, bool, int, int]:
     original_height, original_width, _ = get_h_w_c(image)
 
     if target_width != 0 and target_height != 0:
@@ -574,7 +574,20 @@ def get_chain_for_image(
             print("Matched Chain:", chain, flush=True)
             return chain, is_grayscale, original_width, original_height
 
-    return None, None, original_width, original_height
+    # --- FIX: PURE WHITE/BLACK CHUNK FALLBACK ---
+    # If an image is 100% pure white, the grayscale detector flags it as True.
+    # If the user only selected a Color model, the chain match fails and the chunk is skipped.
+    # Since grayscale/white images are perfectly fine to process through color models,
+    # we fallback to pretending it is a color image so the dimensions don't break.
+    if is_grayscale:
+        for chain in chains:
+            if should_chain_activate_for_image(
+                original_width, original_height, False, target_scale, chain
+            ):
+                print("[Fallback] Pure white/grayscale chunk detected, but no Grayscale chain exists. Routing through Color chain.", flush=True)
+                return chain, False, original_width, original_height
+
+    return None, is_grayscale, original_width, original_height
 
 
 def should_chain_activate_for_image(
@@ -954,7 +967,10 @@ def preprocess_worker_archive_file(
                 
             pred_up_h = pred_pre_h * native_model_scale
             
-            if target_height != 0:
+            # --- FIX: BYPASS GLOBAL HEIGHT LIMIT FOR WEBTOON CHUNKS ---
+            if is_webtoon_chunk and target_width != 0:
+                pred_final_h = original_height * (target_width / original_width)
+            elif target_height != 0:
                 pred_final_h = target_height
             elif target_width != 0:
                 pred_final_h = original_height * (target_width / original_width)
@@ -1201,6 +1217,7 @@ def preprocess_worker_archive_file(
                         majority_pad_side = "left"
                         
                     print(f"[Webtoon] Vote complete -> Left: {left_votes} | Right: {right_votes}. Forcing padding to the {majority_pad_side}.", flush=True)
+
 
                 # --- CALCULATE GRID STEP (REQUIRED FOR ALL MODES) ---
                 from fractions import Fraction
