@@ -1341,12 +1341,32 @@ def preprocess_worker_archive_file(
 
                 # NEW: Handle the final padded chunk for Exact Dimension Mode
                 if is_exact_dimension_mode and output_index < len(chunk_heights) and buffer_img is not None and buffer_img.shape[0] > 0:
-                    target_h = chunk_heights[output_index]
-                    missing_h = target_h - buffer_img.shape[0]
+                    
+                    # Calculate minimal safe grid step so the final integer height math checks out perfectly
+                    from fractions import Fraction
+                    exact_fraction = Fraction(target_width, first_w).limit_denominator()
+                    grid_step = exact_fraction.denominator
+                    
+                    # Make sure it also satisfies the AI model's native d_pre/d_post padding rules
+                    while (grid_step * native_scale) % d_post != 0 or grid_step % d_pre != 0:
+                        grid_step += exact_fraction.denominator
+
+                    actual_h = buffer_img.shape[0]
+                    remainder = actual_h % grid_step
+                    
+                    # Snap the target height to the nearest safe multiple of grid_step
+                    if remainder != 0:
+                        target_h = actual_h + (grid_step - remainder)
+                    else:
+                        target_h = actual_h
+
+                    missing_h = target_h - actual_h
                     
                     if missing_h > 0:
-                        print(f"[Webtoon] Exact Mode: Seamlessly padding final chunk by {missing_h}px to reach {target_h}px.", flush=True)
+                        print(f"[Webtoon] Exact Mode: Minimal padding final chunk by {missing_h}px (Grid step: {grid_step}px) to reach {target_h}px instead of forcing massive padding.", flush=True)
                         buffer_img = cv2.copyMakeBorder(buffer_img, 0, missing_h, 0, 0, cv2.BORDER_REPLICATE)
+                    else:
+                        print(f"[Webtoon] Exact Mode: Final chunk seamlessly matches grid step at {target_h}px. No padding needed.", flush=True)
                         
                     chunk = buffer_img
                     new_stem = get_new_filename(first_image_stem, output_index + 1)
