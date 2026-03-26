@@ -2062,7 +2062,9 @@ def postprocess_worker_zip(
         
         while True:
             data = postprocess_queue.get()
-            if data == POSTPROCESS_SENTINEL:
+            
+            # FIX: Check if the first element (image) is None to avoid NumPy collision
+            if data[0] is None:
                 break
                 
             (image, file_name, is_image, is_grayscale, original_width, original_height, force_standard_resize, crop_bottom_out) = data
@@ -2192,7 +2194,9 @@ def postprocess_worker_folder(
 
     while True:
         data = postprocess_queue.get()
-        if data == POSTPROCESS_SENTINEL:
+        
+        # FIX: Check if the first element (image) is None
+        if data[0] is None:
             break
             
         (image, file_name_rel, is_image, is_grayscale, original_width, original_height, force_standard_resize, crop_bottom_out) = data
@@ -2286,7 +2290,9 @@ def postprocess_worker_image(
     
     while True:
         data = postprocess_queue.get()
-        if data == POSTPROCESS_SENTINEL:
+        
+        # FIX: Check if the first element (image) is None
+        if data[0] is None:
             break
             
         (
