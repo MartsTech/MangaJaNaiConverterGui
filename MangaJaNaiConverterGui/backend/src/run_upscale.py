@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import time
+import math
 from collections.abc import Callable
 from collections import Counter
 from io import BytesIO
@@ -697,25 +698,17 @@ def final_target_resize(
     is_webtoon: bool = False,
 ) -> np.ndarray:
     
-    # --- WEBTOON EXACT DIMENSION OVERRIDE ---
-    if is_webtoon and target_width > 0 and target_height > 0:
+    # --- WEBTOON EXACT DIMENSION OVERRIDE (ASPECT RATIO LOCKED) ---
+    if is_webtoon and target_width > 0:
+        # We completely ignore target_height (4000) here to prevent squishing.
+        # We calculate the mathematically perfect proportional height.
         expected_h = original_height * (target_width / original_width)
+        expected_h_int = math.ceil(expected_h)
         
-        # If the expected height is within a safe margin of target_height, it's a full chunk
-        # that suffered from mathematical grid_step snapping. Stretch it perfectly to bounds.
-        if abs(expected_h - target_height) <= max(50.0, target_height * 0.05):
-            h, w, _ = get_h_w_c(image)
-            if h != target_height or w != target_width:
-                return image_resize(image, (target_width, target_height), is_grayscale, force_standard_resize)
-            return image
-        else:
-            # This is the final minimal-padded remainder chunk.
-            # Enforce width only and let height fall to its exact, clean mathematical integer.
-            h, w, _ = get_h_w_c(image)
-            expected_h_int = round(expected_h)
-            if w != target_width or h != expected_h_int:
-                return image_resize(image, (target_width, expected_h_int), is_grayscale, force_standard_resize)
-            return image
+        h, w, _ = get_h_w_c(image)
+        if w != target_width or h != expected_h_int:
+            return image_resize(image, (target_width, expected_h_int), is_grayscale, force_standard_resize)
+        return image
     # ----------------------------------------
 
     # fit to dimensions
@@ -918,7 +911,7 @@ def preprocess_worker_archive_file(
     def natural_sort_key(s: str):
         return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
-    def process_and_queue_image(image_array: np.ndarray, decoded_filename: str, is_webtoon_chunk: bool = False, force_odd_w_pad: str = None):
+    def process_and_queue_image(image_array: np.ndarray, decoded_filename: str, is_webtoon_chunk: bool = False, force_odd_w_pad: str = None, unpadded_h: int = 0):
         """Helper to process a numpy array through the chain logic and queue it."""
         chain, is_grayscale, original_width, original_height = (
             get_chain_for_image(
@@ -954,30 +947,19 @@ def preprocess_worker_archive_file(
             resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
             d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
             
-            # Predict exact final dimensions to calculate perfect d_post divisor
-            pred_pre_h = original_height / d_pre
-            
             # Dynamically detect native model scale based on filename prefix
             model_filename = Path(model_file_path).name if model_file_path else ""
             scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
-            if scale_match:
-                native_model_scale = int(scale_match.group(1))
-            else:
-                native_model_scale = 1
-                
-            pred_up_h = pred_pre_h * native_model_scale
+            native_scale = int(scale_match.group(1)) if scale_match else 1
             
-            # --- FIX: BYPASS GLOBAL HEIGHT LIMIT FOR WEBTOON CHUNKS ---
-            if is_webtoon_chunk and target_width != 0:
-                pred_final_h = original_height * (target_width / original_width)
-            elif target_height != 0:
-                pred_final_h = target_height
-            elif target_width != 0:
-                pred_final_h = original_height * (target_width / original_width)
+            # --- FIX: NO DUMMY HEIGHT REQUIRED (ALGEBRAIC CANCELLATION) ---
+            if target_width != 0:
+                d_post = max(1, round((native_scale * original_width) / (d_pre * target_width)))
+            elif current_target_scale is not None:
+                d_post = max(1, round(native_scale / (d_pre * current_target_scale)))
             else:
-                pred_final_h = pred_pre_h * current_target_scale
-                
-            d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
+                d_post = 1
+            # ----------------------------------------------------------------------
 
             # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
             if not is_webtoon_chunk:
@@ -985,13 +967,21 @@ def preprocess_worker_archive_file(
                     image_array, 
                     d_pre, 
                     d_post, 
-                    native_model_scale, 
+                    native_scale, 
                     force_bottom=False,
                     force_odd_w_pad=force_odd_w_pad
                 )
         
             # Update dimensions to native canvas size so script logic flows perfectly
             original_height, original_width, _ = get_h_w_c(image_array)
+
+            crop_bottom_out = 0
+            if is_webtoon_chunk and unpadded_h > 0 and target_width > 0:
+                padded_out_h = original_height * (target_width / original_width)
+                exact_out_h = math.ceil(unpadded_h * (target_width / original_width))
+                crop_bottom_out = int(round(padded_out_h - exact_out_h))
+                if crop_bottom_out < 0:
+                    crop_bottom_out = 0
             # -------------------------------
 
             resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
@@ -1086,6 +1076,7 @@ def preprocess_worker_archive_file(
             tile_size_str = chain["ModelTileSize"]
         else:
             image_array = normalize(image_array)
+            crop_bottom_out = 0
 
         # image = np.ascontiguousarray(image)
         upscale_queue.put(
@@ -1100,6 +1091,7 @@ def preprocess_worker_archive_file(
                 model,
                 model_file_path,
                 force_standard_resize,
+                crop_bottom_out
             )
         )
 
@@ -1165,17 +1157,14 @@ def preprocess_worker_archive_file(
                 scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
                 native_scale = int(scale_match.group(1)) if scale_match else 1
                 
-                pred_pre_h = test_img.shape[0] / d_pre
-                pred_up_h = pred_pre_h * native_scale
-                
-                if target_height != 0:
-                    pred_final_h = target_height
-                elif target_width != 0:
-                    pred_final_h = test_img.shape[0] * (target_width / test_img.shape[1])
+                # --- FIX: NO DUMMY HEIGHT REQUIRED ---
+                if target_width != 0:
+                    d_post = max(1, round((native_scale * first_w) / (d_pre * target_width)))
+                elif current_target_scale is not None:
+                    d_post = max(1, round(native_scale / (d_pre * current_target_scale)))
                 else:
-                    pred_final_h = pred_pre_h * current_target_scale
-                    
-                d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
+                    d_post = 1
+                # ----------------------------------------------------------------------
 
                 # --- MAJORITY VOTE FOR WIDTH PADDING ---
                 pad_w = 0
@@ -1242,9 +1231,9 @@ def preprocess_worker_archive_file(
                 is_exact_dimension_mode = (target_width > 0 and target_height > 0)
 
                 if is_exact_dimension_mode:
-                    # Logic for Exact Dimension Mode with Minimal Padding for the last chunk
+                    # Logic for Exact Dimension Mode with Strict Forward Rolling Buffer
                     raw_ideal_h = (target_height * first_w) / target_width
-                    ideal_chunk_h = round(raw_ideal_h / grid_step) * grid_step
+                    ideal_chunk_h = math.ceil(raw_ideal_h / grid_step) * grid_step
                     if ideal_chunk_h <= 0: ideal_chunk_h = grid_step
 
                     num_splits = math.ceil(total_input_h / ideal_chunk_h)
@@ -1260,9 +1249,9 @@ def preprocess_worker_archive_file(
                         if snapped_remainder == 0: snapped_remainder = grid_step
                         chunk_heights.append(snapped_remainder)
                     
-                    print(f"\n[Webtoon] Exact Dimension Mode Active (Minimal Padding):", flush=True)
+                    print(f"\n[Webtoon] Exact Dimension Mode Active (Forward Rolling Buffer):", flush=True)
                     print(f"  -> Target Output: {target_width}x{target_height} (Grid Step: {grid_step}px)", flush=True)
-                    print(f"  -> Calculated Raw Chunk Height: {ideal_chunk_h}px", flush=True)
+                    print(f"  -> Calculated Ceiling Chunk Height: {ideal_chunk_h}px", flush=True)
                     if len(chunk_heights) > 1:
                         print(f"  -> Splits: {num_splits - 1} full chunks, 1 final chunk of {chunk_heights[-1]}px (padded by {chunk_heights[-1] - remainder_h}px)", flush=True)
                     else:
@@ -1414,7 +1403,8 @@ def preprocess_worker_archive_file(
                         chunk, 
                         chunk_filename, 
                         is_webtoon_chunk=True, 
-                        force_odd_w_pad=majority_pad_side
+                        force_odd_w_pad=majority_pad_side,
+                        unpadded_h=actual_h
                     )
                     output_index += 1
                         
@@ -1427,7 +1417,7 @@ def preprocess_worker_archive_file(
                         decoded_filename = filename
                     try:
                         with input_archive.open(filename) as f:
-                            upscale_queue.put((f.read(), decoded_filename, False, False, None, None, None, None, None, force_standard_resize))
+                            upscale_queue.put((f.read(), decoded_filename, False, False, None, None, None, None, None, force_standard_resize, 0))
                     except Exception:
                         pass
                         
@@ -1461,7 +1451,7 @@ def preprocess_worker_archive_file(
         except Exception as e:
             # Matches original logic perfectly: catches non-images and copies them over cleanly.
             print(f"could not read as image, copying file to zip instead of upscaling: {decoded_filename}, {e}", flush=True)
-            upscale_queue.put((image_data, decoded_filename, False, False, None, None, None, None, None, force_standard_resize))
+            upscale_queue.put((image_data, decoded_filename, False, False, None, None, None, None, None, force_standard_resize, 0))
         #     pass
             
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -1558,9 +1548,6 @@ def preprocess_worker_folder(
                         resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
                         d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
                         
-                        # Predict exact final dimensions to calculate perfect d_post divisor
-                        pred_pre_h = original_height / d_pre
-                        
                         # Dynamically detect native model scale based on filename prefix
                         model_filename = Path(model_file_path).name if model_file_path else ""
                         scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
@@ -1571,16 +1558,14 @@ def preprocess_worker_folder(
                             native_model_scale = 1
                             print(f"[Smart Padding] Could not detect native scale from filename '{model_filename}'. Defaulting to {native_model_scale}x.", flush=True)
                             
-                        pred_up_h = pred_pre_h * native_model_scale
-                        
-                        if target_height != 0:
-                            pred_final_h = target_height
-                        elif target_width != 0:
-                            pred_final_h = original_height * (target_width / original_width)
+                        # --- FIX: NO DUMMY HEIGHT REQUIRED (ALGEBRAIC CANCELLATION) ---
+                        if target_width != 0:
+                            d_post = max(1, round((native_model_scale * original_width) / (d_pre * target_width)))
+                        elif current_target_scale is not None:
+                            d_post = max(1, round(native_model_scale / (d_pre * current_target_scale)))
                         else:
-                            pred_final_h = pred_pre_h * current_target_scale
-                            
-                        d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
+                            d_post = 1
+                        # ----------------------------------------------------------------------
 
                         is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', input_file_base))
                         # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
@@ -1717,6 +1702,7 @@ def preprocess_worker_folder(
                             model,
                             model_file_path,
                             force_standard_resize,
+                            0
                         )
                     )
             elif filename.lower().endswith(ARCHIVE_EXTENSIONS):
@@ -1803,9 +1789,6 @@ def preprocess_worker_image(
             resize_factor_before = chain.get("ResizeFactorBeforeUpscale", 100) if chain else 100
             d_pre = max(1, round(100.0 / resize_factor_before)) if resize_factor_before > 0 else 1
             
-            # Predict exact final dimensions to calculate perfect d_post divisor
-            pred_pre_h = original_height / d_pre
-            
             # Dynamically detect native model scale based on filename prefix
             model_filename = Path(model_file_path).name if model_file_path else ""
             scale_match = re.match(r'^(\d+)x', model_filename, re.IGNORECASE)
@@ -1816,16 +1799,14 @@ def preprocess_worker_image(
                 native_model_scale = 1
                 print(f"[Smart Padding] Could not detect native scale from filename '{model_filename}'. Defaulting to {native_model_scale}x.", flush=True)
                 
-            pred_up_h = pred_pre_h * native_model_scale
-            
-            if target_height != 0:
-                pred_final_h = target_height
-            elif target_width != 0:
-                pred_final_h = original_height * (target_width / original_width)
+            # --- FIX: NO DUMMY HEIGHT REQUIRED (ALGEBRAIC CANCELLATION) ---
+            if target_width != 0:
+                d_post = max(1, round((native_model_scale * original_width) / (d_pre * target_width)))
+            elif current_target_scale is not None:
+                d_post = max(1, round(native_model_scale / (d_pre * current_target_scale)))
             else:
-                pred_final_h = pred_pre_h * current_target_scale
-                
-            d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
+                d_post = 1
+            # ----------------------------------------------------------------------
 
             is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(input_image_path).stem))
             # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
@@ -1966,6 +1947,7 @@ def preprocess_worker_image(
                 model,
                 model_file_path,
                 force_standard_resize,
+                0
             )
         )
     upscale_queue.put(UPSCALE_SENTINEL)
@@ -1988,6 +1970,7 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
             model,
             model_file_path,
             force_standard_resize,
+            crop_bottom_out
         ) = upscale_queue.get()
         if image is None:
             break
@@ -2023,7 +2006,7 @@ def upscale_worker(upscale_queue: Queue, postprocess_queue: Queue) -> None:
                 image = convert_image_to_grayscale(image)
 
         postprocess_queue.put(
-            (image, file_name, is_image, is_grayscale, original_width, original_height, force_standard_resize)
+            (image, file_name, is_image, is_grayscale, original_width, original_height, force_standard_resize, crop_bottom_out)
         )
     postprocess_queue.put(POSTPROCESS_SENTINEL)
     # print("upscale_worker exiting")
@@ -2042,45 +2025,117 @@ def postprocess_worker_zip(
     """
     wait for postprocess queue, for each queue entry, save the image to the zip file
     """
-    # print("postprocess_worker_zip entering")
-    
-    # Detect if the destination ZIP is a webtoon using regex on the filename
     is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(output_zip_path).stem))
 
-    with ZipFile(output_zip_path, "w", ZIP_DEFLATED) as output_zip:
-        while True:
-            (
-                image,
-                file_name,
-                is_image,
-                is_grayscale,
-                original_width,
-                original_height,
-                force_standard_resize,
-            ) = postprocess_queue.get()
-            if image is None:
+    def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
+        curr_c = im.shape[2] if im.ndim == 3 else 1
+        if curr_c == target_c: return im
+        if im.ndim == 2: im = np.expand_dims(im, axis=2)
+        if curr_c == 1 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
+        if curr_c == 1 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGBA)
+        if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
+        if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
+        return im
+
+    def get_new_filename(base_name: str, index: int) -> str:
+        parts = re.split(r'(-| )', base_name)
+        replaced = False
+        index_str = str(index)
+        for i in range(len(parts) - 1, -1, -1):
+            part = parts[i]
+            if not part or part in ('-', ' '): continue
+            match = re.match(r'^(\D*)(\d+)$', part)
+            if match:
+                prefix = match.group(1)
+                number_str = match.group(2)
+                pad_length = max(len(number_str), 3)
+                parts[i] = f"{prefix}{index_str.zfill(pad_length)}"
+                replaced = True
                 break
-            if is_image:
-                # image = postprocess_image(image)
-                save_image_zip(
-                    image,
-                    str(Path(file_name).with_suffix(f".{image_format}")),
-                    output_zip,
-                    image_format,
-                    lossy_compression_quality,
-                    use_lossless_compression,
-                    original_width,
-                    original_height,
-                    target_scale,
-                    target_width,
-                    target_height,
-                    is_grayscale,
-                    force_standard_resize,
-                    is_webtoon=is_webtoon,
-                )
-            else:  # copy file
+        if replaced: return "".join(parts)
+        return f"{re.sub(r'\d+$', '', base_name)}{index_str.zfill(3)}"
+
+    with ZipFile(output_zip_path, "w", ZIP_DEFLATED) as output_zip:
+        rolling_buffer = None
+        output_index = 1
+        base_stem = None
+        
+        while True:
+            data = postprocess_queue.get()
+            if data == POSTPROCESS_SENTINEL:
+                break
+                
+            (image, file_name, is_image, is_grayscale, original_width, original_height, force_standard_resize, crop_bottom_out) = data
+            
+            if not is_image:
                 output_zip.writestr(file_name, image)
+                continue
+
+            if base_stem is None:
+                base_stem = Path(file_name).stem
+
+            # 1. Resize to Perfect Aspect Ratio (e.g., 1440x4005)
+            # Webtoon logic in final_target_resize guarantees proportional height scaling
+            image = final_target_resize(
+                image, target_scale, target_width, target_height,
+                original_width, original_height, is_grayscale, force_standard_resize, is_webtoon
+            )
+            
+            # Cleanly slice off ONLY the padding added to fix the upscale fraction
+            if is_webtoon and crop_bottom_out > 0:
+                image = image[:-crop_bottom_out, :, :]
+
+            # 2. Attach any leftover pixels from the previous chunk
+            if is_webtoon and rolling_buffer is not None:
+                max_c = max(rolling_buffer.shape[2] if rolling_buffer.ndim == 3 else 1, image.shape[2] if image.ndim == 3 else 1)
+                rolling_buffer = force_c(rolling_buffer, max_c)
+                image = force_c(image, max_c)
+                image = np.vstack((rolling_buffer, image))
+
+            # 3. Slice perfect 4000px chunks
+            if is_webtoon:
+                slice_h = target_height if target_height > 0 else 4000
+                while image.shape[0] >= slice_h:
+                    chunk = image[:slice_h, :, :]
+                    image = image[slice_h:, :, :]
+
+                    new_stem = get_new_filename(base_stem, output_index)
+                    new_file_name = str(Path(file_name).with_stem(new_stem).with_suffix(f".{image_format}"))
+                    
+                    actual_h, actual_w, _ = get_h_w_c(chunk)
+                    save_image_zip(
+                        chunk, new_file_name, output_zip, image_format, 
+                        lossy_compression_quality, use_lossless_compression, 
+                        actual_w, actual_h, target_scale, actual_w, actual_h, 
+                        is_grayscale, force_standard_resize, False
+                    )
+                    output_index += 1
+                
+                rolling_buffer = image if image.shape[0] > 0 else None
+            else:
+                # Standard save for non-webtoons
+                save_image_zip(
+                    image, str(Path(file_name).with_suffix(f".{image_format}")), 
+                    output_zip, image_format, lossy_compression_quality, 
+                    use_lossless_compression, original_width, original_height, 
+                    target_scale, target_width, target_height, is_grayscale, 
+                    force_standard_resize, False
+                )
             print("PROGRESS=postprocess_worker_zip_image", flush=True)
+
+        # 4. Save any remaining pixels as the final page
+        if is_webtoon and rolling_buffer is not None:
+            new_stem = get_new_filename(base_stem, output_index)
+            new_file_name = str(Path(base_stem).with_stem(new_stem).with_suffix(f".{image_format}"))
+            
+            actual_h, actual_w, _ = get_h_w_c(rolling_buffer)
+            save_image_zip(
+                rolling_buffer, new_file_name, output_zip, image_format, 
+                lossy_compression_quality, use_lossless_compression, 
+                actual_w, actual_h, target_scale, actual_w, actual_h, 
+                is_grayscale, force_standard_resize, False
+            )
+
         print("PROGRESS=postprocess_worker_zip_archive", flush=True)
 
 
@@ -2097,42 +2152,120 @@ def postprocess_worker_folder(
     """
     wait for postprocess queue, for each queue entry, save the image to the output folder
     """
-    # print("postprocess_worker_folder entering")
+    # Detect if the destination folder files should be webtoon
+    # We will rely on the incoming file names to toggle rolling buffer per file sequence.
+    # However, since folder mode can process multiple disparate files, we maintain
+    # the rolling buffer only if the current file's stem indicates it's a webtoon.
+
+    def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
+        curr_c = im.shape[2] if im.ndim == 3 else 1
+        if curr_c == target_c: return im
+        if im.ndim == 2: im = np.expand_dims(im, axis=2)
+        if curr_c == 1 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
+        if curr_c == 1 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGBA)
+        if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
+        if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
+        return im
+
+    def get_new_filename(base_name: str, index: int) -> str:
+        parts = re.split(r'(-| )', base_name)
+        replaced = False
+        index_str = str(index)
+        for i in range(len(parts) - 1, -1, -1):
+            part = parts[i]
+            if not part or part in ('-', ' '): continue
+            match = re.match(r'^(\D*)(\d+)$', part)
+            if match:
+                prefix = match.group(1)
+                number_str = match.group(2)
+                pad_length = max(len(number_str), 3)
+                parts[i] = f"{prefix}{index_str.zfill(pad_length)}"
+                replaced = True
+                break
+        if replaced: return "".join(parts)
+        return f"{re.sub(r'\d+$', '', base_name)}{index_str.zfill(3)}"
+
+    rolling_buffer = None
+    output_index = 1
+    base_stem = None
+    last_file_name_rel = None
+
     while True:
-        (
-            image, 
-            file_name, 
-            _, 
-            is_grayscale, 
-            original_width, 
-            original_height, 
-            force_standard_resize
-        ) = postprocess_queue.get()
-        if image is None:
+        data = postprocess_queue.get()
+        if data == POSTPROCESS_SENTINEL:
             break
-        image = postprocess_image(image)
+            
+        (image, file_name_rel, is_image, is_grayscale, original_width, original_height, force_standard_resize, crop_bottom_out) = data
         
-        # Check if the output filename tags it as a webtoon
-        is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', str(file_name)))
-        
-        save_image(
-            image,
-            os.path.join(output_folder_path, str(Path(f"{file_name}.{image_format}"))),
-            image_format,
-            lossy_compression_quality,
-            use_lossless_compression,
-            original_width,
-            original_height,
-            target_scale,
-            target_width,
-            target_height,
-            is_grayscale,
-            force_standard_resize,
-            is_webtoon=is_webtoon,
+        if not is_image:
+            continue
+
+        is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', str(file_name_rel)))
+
+        # 1. Resize to Perfect Aspect Ratio
+        image = final_target_resize(
+            image, target_scale, target_width, target_height,
+            original_width, original_height, is_grayscale, force_standard_resize, is_webtoon
         )
+        
+        # Cleanly slice off ONLY the padding added to fix the upscale fraction
+        if is_webtoon and crop_bottom_out > 0:
+            image = image[:-crop_bottom_out, :, :]
+
+        if is_webtoon:
+            if base_stem is None:
+                base_stem = Path(file_name_rel).stem
+
+            # 2. Attach any leftover pixels
+            if rolling_buffer is not None:
+                max_c = max(rolling_buffer.shape[2] if rolling_buffer.ndim == 3 else 1, image.shape[2] if image.ndim == 3 else 1)
+                rolling_buffer = force_c(rolling_buffer, max_c)
+                image = force_c(image, max_c)
+                image = np.vstack((rolling_buffer, image))
+
+            # 3. Slice perfect chunks
+            slice_h = target_height if target_height > 0 else 4000
+            while image.shape[0] >= slice_h:
+                chunk = image[:slice_h, :, :]
+                image = image[slice_h:, :, :]
+
+                new_stem = get_new_filename(base_stem, output_index)
+                new_file_name = str(Path(file_name_rel).with_stem(new_stem).with_suffix(f".{image_format}"))
+                output_path = os.path.join(output_folder_path, new_file_name)
+                
+                actual_h, actual_w, _ = get_h_w_c(chunk)
+                save_image(
+                    chunk, output_path, image_format, lossy_compression_quality, 
+                    use_lossless_compression, actual_w, actual_h, target_scale, 
+                    actual_w, actual_h, is_grayscale, force_standard_resize, False
+                )
+                output_index += 1
+            
+            rolling_buffer = image if image.shape[0] > 0 else None
+            last_file_name_rel = file_name_rel
+        else:
+            output_path = os.path.join(output_folder_path, str(Path(f"{file_name_rel}.{image_format}")))
+            save_image(
+                image, output_path, image_format, lossy_compression_quality, 
+                use_lossless_compression, original_width, original_height, 
+                target_scale, target_width, target_height, is_grayscale, 
+                force_standard_resize, False
+            )
+
         print("PROGRESS=postprocess_worker_folder", flush=True)
 
-    # print("postprocess_worker_folder exiting")
+    # 4. Save any remaining pixels as the final page
+    if rolling_buffer is not None and last_file_name_rel is not None:
+        new_stem = get_new_filename(base_stem, output_index)
+        new_file_name = str(Path(last_file_name_rel).with_stem(new_stem).with_suffix(f".{image_format}"))
+        output_path = os.path.join(output_folder_path, new_file_name)
+        
+        actual_h, actual_w, _ = get_h_w_c(rolling_buffer)
+        save_image(
+            rolling_buffer, output_path, image_format, lossy_compression_quality, 
+            use_lossless_compression, actual_w, actual_h, target_scale, 
+            actual_w, actual_h, is_grayscale, force_standard_resize, False
+        )
 
 
 def postprocess_worker_image(
@@ -2152,6 +2285,10 @@ def postprocess_worker_image(
     is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(output_file_path).stem))
     
     while True:
+        data = postprocess_queue.get()
+        if data == POSTPROCESS_SENTINEL:
+            break
+            
         (
             image, 
             _, 
@@ -2159,11 +2296,13 @@ def postprocess_worker_image(
             is_grayscale, 
             original_width, 
             original_height, 
-            force_standard_resize
-        ) = postprocess_queue.get()
-        if image is None:
-            break
-        # image = postprocess_image(image)
+            force_standard_resize,
+            crop_bottom_out
+        ) = data
+        
+        # For a single image pass, we can still crop if needed
+        if is_webtoon and crop_bottom_out > 0:
+            image = image[:-crop_bottom_out, :, :]
 
         save_image(
             image,
@@ -2551,8 +2690,8 @@ settings = parse_settings_from_cli()
 workflow = settings["Workflows"]["$values"][settings["SelectedWorkflowIndex"]]
 models_directory = settings["ModelsDirectory"]
 
-UPSCALE_SENTINEL = (None, None, None, None, None, None, None, None, None, None)
-POSTPROCESS_SENTINEL = (None, None, None, None, None, None, None)
+UPSCALE_SENTINEL = (None,) * 11
+POSTPROCESS_SENTINEL = (None,) * 8
 CV2_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 IMAGE_EXTENSIONS = (*CV2_IMAGE_EXTENSIONS, ".avif")
 ZIP_EXTENSIONS = (".zip", ".cbz")
