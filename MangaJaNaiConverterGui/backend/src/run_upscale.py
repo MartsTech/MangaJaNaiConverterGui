@@ -979,15 +979,17 @@ def preprocess_worker_archive_file(
                 
             d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-            # Pass Webtoon specific padding overrides
-            image_array = add_smart_padding(
-                image_array, 
-                d_pre, 
-                d_post, 
-                native_model_scale, 
-                force_bottom=is_webtoon_chunk,
-                force_odd_w_pad=force_odd_w_pad
-            )
+            # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
+            if not is_webtoon_chunk:
+                image_array = add_smart_padding(
+                    image_array, 
+                    d_pre, 
+                    d_post, 
+                    native_model_scale, 
+                    force_bottom=False,
+                    force_odd_w_pad=force_odd_w_pad
+                )
+        
             # Update dimensions to native canvas size so script logic flows perfectly
             original_height, original_width, _ = get_h_w_c(image_array)
             # -------------------------------
@@ -1580,7 +1582,11 @@ def preprocess_worker_folder(
                             
                         d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-                        image = add_smart_padding(image, d_pre, d_post, native_model_scale)
+                        is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', input_file_base))
+                        # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
+                        if not is_webtoon:
+                            image = add_smart_padding(image, d_pre, d_post, native_model_scale)
+
                         original_height, original_width, _ = get_h_w_c(image)
                         # -------------------------------
 
@@ -1821,7 +1827,19 @@ def preprocess_worker_image(
                 
             d_post = max(1, round(pred_up_h / pred_final_h)) if pred_final_h > 0 else 1
 
-            image = add_smart_padding(image, d_pre, d_post, native_model_scale)
+            is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(input_image_path).stem))
+            # --- FIX: BYPASS POINTLESS PADDING FOR WEBTOON CHUNKS ---
+            if not is_webtoon:
+                image = add_smart_padding(
+                    image, 
+                    d_pre, 
+                    d_post, 
+                    native_model_scale, 
+                    force_bottom=False,
+                    force_odd_w_pad=None
+                )
+                
+            # Update dimensions to native canvas size so script logic flows perfectly
             original_height, original_width, _ = get_h_w_c(image)
             # -------------------------------
 
