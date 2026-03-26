@@ -755,30 +755,9 @@ def save_image_zip(
     image_format: str,
     lossy_compression_quality: int,
     use_lossless_compression: bool,
-    original_width: int,
-    original_height: int,
-    target_scale: float,
-    target_width: int,
-    target_height: int,
-    is_grayscale: bool,
-    force_standard_resize: bool = False,
     is_webtoon: bool = False,
 ) -> None:
     print(f"save image to zip: {file_name}", flush=True)
-
-    image = to_uint8(image, normalized=True)
-
-    image = final_target_resize(
-        image,
-        target_scale,
-        target_width,
-        target_height,
-        original_width,
-        original_height,
-        is_grayscale,
-        force_standard_resize,
-        is_webtoon,
-    )
 
     # Convert the resized image back to bytes
     args = {"Q": int(lossy_compression_quality)}
@@ -803,30 +782,9 @@ def save_image(
     image_format: str,
     lossy_compression_quality: int,
     use_lossless_compression: bool,
-    original_width: int,
-    original_height: int,
-    target_scale: float,
-    target_width: int,
-    target_height: int,
-    is_grayscale: bool,
-    force_standard_resize: bool = False,
     is_webtoon: bool = False,
 ) -> None:
     print(f"save image: {output_file_path}", flush=True)
-
-    image = to_uint8(image, normalized=True)
-
-    image = final_target_resize(
-        image,
-        target_scale,
-        target_width,
-        target_height,
-        original_width,
-        original_height,
-        is_grayscale,
-        force_standard_resize,
-        is_webtoon,
-    )
 
     args = {"Q": int(lossy_compression_quality)}
     if image_format in {"webp"}:
@@ -2076,6 +2034,9 @@ def postprocess_worker_zip(
             if base_stem is None:
                 base_stem = Path(file_name).stem
 
+            # FIX: Convert to uint8 before resizing to prevent float32 decimal crushing
+            image = to_uint8(image, normalized=True)
+
             # 1. Resize to Perfect Aspect Ratio (e.g., 1440x4005)
             # Webtoon logic in final_target_resize guarantees proportional height scaling
             image = final_target_resize(
@@ -2104,12 +2065,9 @@ def postprocess_worker_zip(
                     new_stem = get_new_filename(base_stem, output_index)
                     new_file_name = str(Path(file_name).with_stem(new_stem).with_suffix(f".{image_format}"))
                     
-                    actual_h, actual_w, _ = get_h_w_c(chunk)
                     save_image_zip(
                         chunk, new_file_name, output_zip, image_format, 
-                        lossy_compression_quality, use_lossless_compression, 
-                        actual_w, actual_h, target_scale, actual_w, actual_h, 
-                        is_grayscale, force_standard_resize, False
+                        lossy_compression_quality, use_lossless_compression, is_webtoon=True
                     )
                     output_index += 1
                 
@@ -2119,9 +2077,7 @@ def postprocess_worker_zip(
                 save_image_zip(
                     image, str(Path(file_name).with_suffix(f".{image_format}")), 
                     output_zip, image_format, lossy_compression_quality, 
-                    use_lossless_compression, original_width, original_height, 
-                    target_scale, target_width, target_height, is_grayscale, 
-                    force_standard_resize, False
+                    use_lossless_compression, is_webtoon=False
                 )
             print("PROGRESS=postprocess_worker_zip_image", flush=True)
 
@@ -2130,12 +2086,9 @@ def postprocess_worker_zip(
             new_stem = get_new_filename(base_stem, output_index)
             new_file_name = str(Path(base_stem).with_stem(new_stem).with_suffix(f".{image_format}"))
             
-            actual_h, actual_w, _ = get_h_w_c(rolling_buffer)
             save_image_zip(
                 rolling_buffer, new_file_name, output_zip, image_format, 
-                lossy_compression_quality, use_lossless_compression, 
-                actual_w, actual_h, target_scale, actual_w, actual_h, 
-                is_grayscale, force_standard_resize, False
+                lossy_compression_quality, use_lossless_compression, is_webtoon=True
             )
 
         print("PROGRESS=postprocess_worker_zip_archive", flush=True)
@@ -2154,11 +2107,6 @@ def postprocess_worker_folder(
     """
     wait for postprocess queue, for each queue entry, save the image to the output folder
     """
-    # Detect if the destination folder files should be webtoon
-    # We will rely on the incoming file names to toggle rolling buffer per file sequence.
-    # However, since folder mode can process multiple disparate files, we maintain
-    # the rolling buffer only if the current file's stem indicates it's a webtoon.
-
     def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
         curr_c = im.shape[2] if im.ndim == 3 else 1
         if curr_c == target_c: return im
@@ -2206,6 +2154,9 @@ def postprocess_worker_folder(
 
         is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', str(file_name_rel)))
 
+        # FIX: Convert to uint8 before resizing
+        image = to_uint8(image, normalized=True)
+
         # 1. Resize to Perfect Aspect Ratio
         image = final_target_resize(
             image, target_scale, target_width, target_height,
@@ -2237,11 +2188,9 @@ def postprocess_worker_folder(
                 new_file_name = str(Path(file_name_rel).with_stem(new_stem).with_suffix(f".{image_format}"))
                 output_path = os.path.join(output_folder_path, new_file_name)
                 
-                actual_h, actual_w, _ = get_h_w_c(chunk)
                 save_image(
                     chunk, output_path, image_format, lossy_compression_quality, 
-                    use_lossless_compression, actual_w, actual_h, target_scale, 
-                    actual_w, actual_h, is_grayscale, force_standard_resize, False
+                    use_lossless_compression, is_webtoon=True
                 )
                 output_index += 1
             
@@ -2251,9 +2200,7 @@ def postprocess_worker_folder(
             output_path = os.path.join(output_folder_path, str(Path(f"{file_name_rel}.{image_format}")))
             save_image(
                 image, output_path, image_format, lossy_compression_quality, 
-                use_lossless_compression, original_width, original_height, 
-                target_scale, target_width, target_height, is_grayscale, 
-                force_standard_resize, False
+                use_lossless_compression, is_webtoon=False
             )
 
         print("PROGRESS=postprocess_worker_folder", flush=True)
@@ -2264,11 +2211,9 @@ def postprocess_worker_folder(
         new_file_name = str(Path(last_file_name_rel).with_stem(new_stem).with_suffix(f".{image_format}"))
         output_path = os.path.join(output_folder_path, new_file_name)
         
-        actual_h, actual_w, _ = get_h_w_c(rolling_buffer)
         save_image(
             rolling_buffer, output_path, image_format, lossy_compression_quality, 
-            use_lossless_compression, actual_w, actual_h, target_scale, 
-            actual_w, actual_h, is_grayscale, force_standard_resize, False
+            use_lossless_compression, is_webtoon=True
         )
 
 
@@ -2306,6 +2251,14 @@ def postprocess_worker_image(
             crop_bottom_out
         ) = data
         
+        # FIX: Convert to uint8 before resizing
+        image = to_uint8(image, normalized=True)
+
+        image = final_target_resize(
+            image, target_scale, target_width, target_height,
+            original_width, original_height, is_grayscale, force_standard_resize, is_webtoon
+        )
+        
         # For a single image pass, we can still crop if needed
         if is_webtoon and crop_bottom_out > 0:
             image = image[:-crop_bottom_out, :, :]
@@ -2316,13 +2269,6 @@ def postprocess_worker_image(
             image_format,
             lossy_compression_quality,
             use_lossless_compression,
-            original_width,
-            original_height,
-            target_scale,
-            target_width,
-            target_height,
-            is_grayscale,
-            force_standard_resize,
             is_webtoon=is_webtoon,
         )
         print("PROGRESS=postprocess_worker_image", flush=True)
