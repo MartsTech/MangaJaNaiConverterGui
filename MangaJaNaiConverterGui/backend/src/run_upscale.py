@@ -1226,7 +1226,7 @@ def preprocess_worker_archive_file(
                             else:
                                 buffer_img = np.vstack((buffer_img, img))
                                 
-                            while chunk_idx < len(chunk_heights):
+                            while chunk_idx < len(chunk_heights) and buffer_img is not None:
                                 target_h = chunk_heights[chunk_idx]
                                 if buffer_img.shape[0] >= target_h:
                                     chunk = buffer_img[:target_h, :, :]
