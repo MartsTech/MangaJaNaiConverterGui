@@ -126,6 +126,23 @@ def get_tile_size(tile_size_str: str) -> TileSize:
 
     return ESTIMATE
 
+
+def force_3c(im: np.ndarray) -> np.ndarray:
+    """Forces an image array to exactly 3 channels (RGB) losslessly in memory."""
+    if im.ndim == 2:
+        return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
+    
+    curr_c = im.shape[2]
+    if curr_c == 3:
+        return im
+    if curr_c == 1:
+        return cv2.cvtColor(im.squeeze(axis=-1), cv2.COLOR_GRAY2RGB)
+    if curr_c == 4:
+        # Instantly slice off the alpha array to downgrade to 3-channel RGB
+        return im[:, :, :3]
+    return im
+
+
 # --- DYNAMIC SMART PADDING ---
 def add_smart_padding(image: np.ndarray, d_pre: int, d_post: int, native_scale: int, force_bottom: bool = False, force_odd_w_pad: str = None) -> np.ndarray:
     """
@@ -1049,7 +1066,12 @@ def preprocess_worker_archive_file(
     # CORE ROUTING & WEBTOON LOGIC
     # ==========================================
     archive_stem = Path(input_archive.filename).stem if hasattr(input_archive, "filename") and input_archive.filename else "Archive"
-    is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', archive_stem))
+    
+    # Bypass Webtoon slicing if this is a Scunet pass
+    if "scunet" in archive_stem.lower():
+        is_webtoon = False
+    else:
+        is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', archive_stem))
     
     image_namelist = [f for f in namelist if f.lower().endswith(IMAGE_EXTENSIONS)]
     image_namelist.sort(key=natural_sort_key)
@@ -1148,16 +1170,6 @@ def preprocess_worker_archive_file(
                         if ideal_h <= 0: ideal_h = g
                         return ideal_h
 
-                def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
-                    curr_c = im.shape[2] if im.ndim == 3 else 1
-                    if curr_c == target_c: return im
-                    if im.ndim == 2: im = np.expand_dims(im, axis=2)
-                    if curr_c == 1 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
-                    if curr_c == 1 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGBA)
-                    if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
-                    if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
-                    return im
-
                 first_image_stem = Path(image_namelist[0]).stem
                 global_chunk_idx = 0
                 
@@ -1207,14 +1219,12 @@ def preprocess_worker_archive_file(
                     for img_meta in group_images:
                         with input_archive.open(img_meta['filename']) as f:
                             img = _read_image(f.read(), img_meta['filename'])
+                            img = force_3c(img)
                             
                             if buffer_img is None:
                                 buffer_img = img
                             else:
-                                c1 = buffer_img.shape[2] if buffer_img.ndim == 3 else 1
-                                c2 = img.shape[2] if img.ndim == 3 else 1
-                                max_c = max(c1, c2)
-                                buffer_img = np.vstack((force_c(buffer_img, max_c), force_c(img, max_c)))
+                                buffer_img = np.vstack((buffer_img, img))
                                 
                             while chunk_idx < len(chunk_heights):
                                 target_h = chunk_heights[chunk_idx]
@@ -1541,9 +1551,9 @@ def preprocess_worker_folder(
                         print("No chain!!!!!!!")
                         image = normalize(image)
                         unpadded_h = 0
-
+                   
                     # image = np.ascontiguousarray(image)
-                    
+
                     upscale_queue.put(
                         (
                             image,
@@ -1890,16 +1900,6 @@ def postprocess_worker_zip(
     """
     is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', Path(output_zip_path).stem))
 
-    def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
-        curr_c = im.shape[2] if im.ndim == 3 else 1
-        if curr_c == target_c: return im
-        if im.ndim == 2: im = np.expand_dims(im, axis=2)
-        if curr_c == 1 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
-        if curr_c == 1 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGBA)
-        if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
-        if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
-        return im
-
     def get_new_filename(base_name: str, index: int) -> str:
         parts = re.split(r'(-| )', base_name)
         replaced = False
@@ -1950,11 +1950,11 @@ def postprocess_worker_zip(
             if is_webtoon and crop_bottom_out > 0:
                 image = image[:-crop_bottom_out, :, :]
 
+            if is_webtoon:
+                image = force_3c(image)
+
             # 2. Attach any leftover pixels from the previous chunk
             if is_webtoon and rolling_buffer is not None:
-                max_c = max(rolling_buffer.shape[2] if rolling_buffer.ndim == 3 else 1, image.shape[2] if image.ndim == 3 else 1)
-                rolling_buffer = force_c(rolling_buffer, max_c)
-                image = force_c(image, max_c)
                 image = np.vstack((rolling_buffer, image))
 
             # 3. Slice perfect 4000px chunks
@@ -2008,16 +2008,6 @@ def postprocess_worker_folder(
     """
     wait for postprocess queue, for each queue entry, save the image to the output folder
     """
-    def force_c(im: np.ndarray, target_c: int) -> np.ndarray:
-        curr_c = im.shape[2] if im.ndim == 3 else 1
-        if curr_c == target_c: return im
-        if im.ndim == 2: im = np.expand_dims(im, axis=2)
-        if curr_c == 1 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
-        if curr_c == 1 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_GRAY2RGBA)
-        if curr_c == 3 and target_c == 4: return cv2.cvtColor(im, cv2.COLOR_RGB2RGBA)
-        if curr_c == 4 and target_c == 3: return cv2.cvtColor(im, cv2.COLOR_RGBA2RGB)
-        return im
-
     def get_new_filename(base_name: str, index: int) -> str:
         parts = re.split(r'(-| )', base_name)
         replaced = False
@@ -2070,11 +2060,10 @@ def postprocess_worker_folder(
             if base_stem is None:
                 base_stem = Path(file_name_rel).stem
 
+            image = force_3c(image)
+
             # 2. Attach any leftover pixels
             if rolling_buffer is not None:
-                max_c = max(rolling_buffer.shape[2] if rolling_buffer.ndim == 3 else 1, image.shape[2] if image.ndim == 3 else 1)
-                rolling_buffer = force_c(rolling_buffer, max_c)
-                image = force_c(image, max_c)
                 image = np.vstack((rolling_buffer, image))
 
             # 3. Slice perfect chunks
@@ -2158,6 +2147,9 @@ def postprocess_worker_image(
         
         if is_webtoon and crop_bottom_out > 0:
             image = image[:-crop_bottom_out, :, :]
+
+        if is_webtoon:
+            image = force_3c(image)
 
         save_image(
             image,
