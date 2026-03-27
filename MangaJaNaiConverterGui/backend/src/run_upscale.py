@@ -857,6 +857,7 @@ def preprocess_worker_archive_file(
 ) -> None:
     """
     given an input zip or rar archive, read images out of the archive, apply auto levels, add the image to upscale queue.
+    Includes smart pre-upscale Webtoon splicing with optimal math rounding, majority voting, and metadata preservation.
     """
     import math
     import re
@@ -1044,6 +1045,9 @@ def preprocess_worker_archive_file(
             )
         )
 
+    # ==========================================
+    # CORE ROUTING & WEBTOON LOGIC
+    # ==========================================
     archive_stem = Path(input_archive.filename).stem if hasattr(input_archive, "filename") and input_archive.filename else "Archive"
     is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', archive_stem))
     
@@ -1157,6 +1161,25 @@ def preprocess_worker_archive_file(
                 first_image_stem = Path(image_namelist[0]).stem
                 global_chunk_idx = 0
                 
+                def get_new_filename(base_name: str, index: int) -> str:
+                    parts = re.split(r'(-| )', base_name)
+                    replaced = False
+                    index_str = str(index)
+                    for i in range(len(parts) - 1, -1, -1):
+                        part = parts[i]
+                        if not part or part in ('-', ' '): continue
+                        match = re.match(r'^(\D*)(\d+)$', part)
+                        if match:
+                            prefix = match.group(1)
+                            number_str = match.group(2)
+                            pad_length = max(len(number_str), 3)
+                            parts[i] = f"{prefix}{index_str.zfill(pad_length)}"
+                            replaced = True
+                            break
+                    if replaced: return "".join(parts)
+                    fallback_base = re.sub(r'\d+$', '', base_name)
+                    return f"{fallback_base}{index_str.zfill(3)}"
+                
                 # --- Pass 2: The Conqueror (Process Each Group Independently) ---
                 for g_idx, group in enumerate(groups):
                     group_w = group['width']
@@ -1203,7 +1226,7 @@ def preprocess_worker_archive_file(
                                         buffer_img = buffer_img[target_h:, :, :]
                                         
                                     global_chunk_idx += 1
-                                    chunk_filename = f"{first_image_stem}_part_{global_chunk_idx:03d}.png"
+                                    chunk_filename = f"{get_new_filename(first_image_stem, global_chunk_idx)}.png"
                                     
                                     print(f"[Webtoon] Spliced Chunk {chunk_idx + 1}/{num_splits} -> {chunk_filename}", flush=True)
                                     process_and_queue_image(chunk, chunk_filename, is_webtoon_chunk=True, force_odd_w_pad="right", unpadded_h=0)
@@ -1223,7 +1246,7 @@ def preprocess_worker_archive_file(
                             chunk = buffer_img
                             
                         global_chunk_idx += 1
-                        chunk_filename = f"{first_image_stem}_part_{global_chunk_idx:03d}.png"
+                        chunk_filename = f"{get_new_filename(first_image_stem, global_chunk_idx)}.png"
                         
                         print(f"[Webtoon] Spliced Boundary Chunk {chunk_idx + 1}/{num_splits} (Padded +{missing_h}px) -> {chunk_filename}", flush=True)
                         process_and_queue_image(chunk, chunk_filename, is_webtoon_chunk=True, force_odd_w_pad="right", unpadded_h=actual_h)
@@ -1244,6 +1267,9 @@ def preprocess_worker_archive_file(
             else:
                 print("[Webtoon] Calculation/Validation failed. Falling back to standard CBZ processing.", flush=True)
             
+    # ==========================================
+    # STANDARD FALLBACK / NORMAL PROCESSING
+    # ==========================================
     for filename in namelist:
         decoded_filename = filename
         image_data = None
@@ -1263,13 +1289,11 @@ def preprocess_worker_archive_file(
                 process_and_queue_image(image, decoded_filename, is_webtoon_chunk=False)
                 
         except Exception as e:
-            print(
-                f"could not read as image, copying file to zip instead of upscaling: {decoded_filename}, {e}",
-                flush=True,
-            )
+            # Matches original logic perfectly: catches non-images and copies them over cleanly.
+            print(f"could not read as image, copying file to zip instead of upscaling: {decoded_filename}, {e}", flush=True)
             upscale_queue.put((image_data, decoded_filename, False, False, None, None, None, None, None, force_standard_resize, 0))
         #     pass
-
+            
     upscale_queue.put(UPSCALE_SENTINEL)
     # print("preprocess_worker_archive exiting")
 
@@ -1383,8 +1407,15 @@ def preprocess_worker_folder(
                         is_webtoon = bool(re.search(r'(?i)\(webtoon[1-4]?\)', input_file_base))
                         unpadded_h = 0
                         
-                        if not is_webtoon: 
-                            image = add_smart_padding(image, d_pre, d_post, native_model_scale)
+                        if not is_webtoon:
+                            image = add_smart_padding(
+                                image, 
+                                d_pre, 
+                                d_post, 
+                                native_model_scale, 
+                                force_bottom=False,
+                                force_odd_w_pad=None
+                            )
                         else:
                             from fractions import Fraction
                             if target_width != 0: exact_fraction = Fraction(target_width, original_width).limit_denominator()
@@ -1399,29 +1430,19 @@ def preprocess_worker_folder(
                                 missing_h = g - remainder
                                 image = cv2.copyMakeBorder(image, 0, missing_h, 0, 0, cv2.BORDER_REPLICATE)
                                 unpadded_h = original_height
-
+                            
+                        # Update dimensions to native canvas size so script logic flows perfectly
                         original_height, original_width, _ = get_h_w_c(image)
 
                         resize_width_before_upscale = chain["ResizeWidthBeforeUpscale"]
-                        resize_height_before_upscale = chain[
-                            "ResizeHeightBeforeUpscale"
-                        ]
-                        resize_factor_before_upscale = chain[
-                            "ResizeFactorBeforeUpscale"
-                        ]
+                        resize_height_before_upscale = chain["ResizeHeightBeforeUpscale"]
+                        resize_factor_before_upscale = chain["ResizeFactorBeforeUpscale"]
 
                         # resize width and height, distorting image
-                        if (
-                            resize_height_before_upscale != 0
-                            and resize_width_before_upscale != 0
-                        ):
+                        if resize_height_before_upscale != 0 and resize_width_before_upscale != 0:
                             h, w, _ = get_h_w_c(image)
                             image = image_resize(
-                                image,
-                                (
-                                    resize_width_before_upscale,
-                                    resize_height_before_upscale,
-                                ),
+                                image, (resize_width_before_upscale, resize_height_before_upscale),
                                 is_grayscale, force_standard_resize
                             )
                         # resize height, keep proportional width
@@ -1466,56 +1487,63 @@ def preprocess_worker_folder(
                         else:
                             image = normalize(image)
 
-                        model_abs_path = get_model_abs_path(chain["ModelFilePath"])
+                        if chain["ModelFilePath"] == "No Model":
+                            pass
+                        else:
+                            model_abs_path = get_model_abs_path(chain["ModelFilePath"])
 
-                        if model_abs_path in loaded_models:
-                            model = loaded_models[model_abs_path]
+                            if not os.path.exists(model_abs_path):
+                                raise FileNotFoundError(model_abs_path)
 
-                        elif os.path.exists(model_abs_path):
-                            if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
-                                print(f"Loading TensorRT model: {model_abs_path}", flush=True)
-                                
-                                filename_lower = model_abs_path.lower()
-                                
-                                if "fp16" in filename_lower:
-                                    use_fp16_val = True
-                                    use_strong_types_val = True
-                                    use_bf16_val = False
-                                elif "fp32" in filename_lower:
-                                    use_fp16_val = False
-                                    use_strong_types_val = False
-                                    use_bf16_val = True
+                            if model_abs_path in loaded_models:
+                                model = loaded_models[model_abs_path]
+
+                            elif os.path.exists(model_abs_path):
+                                if model_abs_path.lower().endswith(".onnx") and TensorRTUpscaler is not None:
+                                    print(f"Loading TensorRT model: {model_abs_path}", flush=True)
+                                    
+                                    filename_lower = model_abs_path.lower()
+                                    
+                                    if "fp16" in filename_lower:
+                                        use_fp16_val = True
+                                        use_strong_types_val = True
+                                        use_bf16_val = False
+                                    elif "fp32" in filename_lower:
+                                        use_fp16_val = False
+                                        use_strong_types_val = False
+                                        use_bf16_val = True
+                                    else:
+                                        use_fp16_val = False
+                                        use_strong_types_val = False
+                                        use_bf16_val = True
+
+                                    with engine_build_lock:
+                                        model = TensorRTUpscaler(
+                                            onnx_path=model_abs_path,
+                                            batch_size=1,
+                                            use_fp16=use_fp16_val,
+                                            use_bf16=use_bf16_val,
+                                            use_strong_types=use_strong_types_val,
+                                            device_id=settings_parser.get_int("accelerator_device_index", 0),
+                                            engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
+                                            shape_min=(32, 32),
+                                            shape_opt=(512, 512),
+                                            shape_max=(512, 512),
+                                            tile_align=16,
+                                            builder_opt_level=3,
+                                            trt_workspace_gb=24
+                                        )
                                 else:
-                                    use_fp16_val = False
-                                    use_strong_types_val = False
-                                    use_bf16_val = True
-
-                                with engine_build_lock:
-                                    model = TensorRTUpscaler(
-                                        onnx_path=model_abs_path,
-                                        batch_size=1,
-                                        use_fp16=use_fp16_val,
-                                        use_bf16=use_bf16_val,
-                                        use_strong_types=use_strong_types_val,
-                                        device_id=settings_parser.get_int("accelerator_device_index", 0),
-                                        engine_cache_dir=os.path.join(os.path.dirname(model_abs_path), ".trt_cache"),
-                                        shape_min=(32, 32),
-                                        shape_opt=(512, 512),
-                                        shape_max=(512, 512),
-                                        tile_align=16,
-                                        builder_opt_level=3,
-                                        trt_workspace_gb=24
-                                    )
-                            else:
-                                model, _, _ = load_model_node(context, Path(model_abs_path))
-                            loaded_models[model_abs_path] = model
-                        tile_size_str = chain["ModelTileSize"]
+                                    model, _, _ = load_model_node(context, Path(model_abs_path))
+                                loaded_models[model_abs_path] = model
+                            tile_size_str = chain["ModelTileSize"]
                     else:
+                        print("No chain!!!!!!!")
                         image = normalize(image)
                         unpadded_h = 0
-                   
-                    # image = np.ascontiguousarray(image)
 
+                    # image = np.ascontiguousarray(image)
+                    
                     upscale_queue.put(
                         (
                             image,
