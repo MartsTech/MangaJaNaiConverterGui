@@ -1916,7 +1916,8 @@ def postprocess_worker_zip(
                 replaced = True
                 break
         if replaced: return "".join(parts)
-        return f"{re.sub(r'\d+$', '', base_name)}{index_str.zfill(3)}"
+        clean_base = re.sub(r'\d+$', '', base_name)
+        return f"{clean_base}{index_str.zfill(3)}"
 
     with ZipFile(output_zip_path, "w", ZIP_DEFLATED) as output_zip:
         rolling_buffer = None
@@ -2024,7 +2025,8 @@ def postprocess_worker_folder(
                 replaced = True
                 break
         if replaced: return "".join(parts)
-        return f"{re.sub(r'\d+$', '', base_name)}{index_str.zfill(3)}"
+        clean_base = re.sub(r'\d+$', '', base_name)
+        return f"{clean_base}{index_str.zfill(3)}"
 
     rolling_buffer = None
     output_index = 1
