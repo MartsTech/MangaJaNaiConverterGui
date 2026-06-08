@@ -293,14 +293,14 @@ class TensorRTUpscaler:
                     console.print(
                         "[yellow]  Strong types enabled: using ONNX-defined types (no precision flags)[/]"
                     )
-            elif self.use_bf16 and builder.platform_has_fast_fp16:
+            elif self.use_bf16 and getattr(builder, "platform_has_fast_fp16", True):
                 if self._maybe_set_builder_flag(config, "BF16", "BF16Enable", "kBF16"):
                     console.print("  Using BF16 precision")
                 else:
                     console.print(
                         "[yellow]  BF16 flag not available in this TRT build; falling back[/]"
                     )
-            elif self.use_fp16 and builder.platform_has_fast_fp16:
+            elif self.use_fp16 and getattr(builder, "platform_has_fast_fp16", True):
                 if self._maybe_set_builder_flag(config, "FP16", "FP16Enable", "kFP16"):
                     console.print("  Using FP16 precision")
                 else:
