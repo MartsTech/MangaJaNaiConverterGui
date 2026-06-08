@@ -251,7 +251,10 @@ class TensorRTUpscaler:
         try:
             builder = trt.Builder(self.logger)
 
-            flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+            flags = 0
+            if hasattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"):
+                flags |= 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+                
             if self.use_strong_types and hasattr(
                 trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"
             ):
