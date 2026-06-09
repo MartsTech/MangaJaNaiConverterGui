@@ -284,13 +284,12 @@ def apply_wavelet_color_fix(
 ) -> np.ndarray:
     """
     Applies wavelet color fix using the source_img (original) as the color reference
-    and target_img (upscaled) as the content reference.
+    and target_img (upscaled) as the content reference. Automatically falls back to
+    seamless tiling if an Out of Memory (OOM) error occurs.
     """
     device_idx = settings_parser.get_int("accelerator_device_index", 0)
     
     if torch.cuda.is_available():
-        # DOCKER FIX: If PyTorch sees fewer GPUs than the requested index 
-        # (due to CUDA_VISIBLE_DEVICES), map it back to 0 to prevent crashes.
         if device_idx >= torch.cuda.device_count():
             device_idx = 0
         device = torch.device(f"cuda:{device_idx}")
@@ -300,29 +299,103 @@ def apply_wavelet_color_fix(
     target_h, target_w, _ = get_h_w_c(target_img)
 
     # Resize source image (original) to match target image (upscaled)
-    # Using Box filter is generally better for the 'color' reference pass to avoid ringing
     source_img_resized = resize(
         source_img, (target_w, target_h), ResizeFilter.Box, False
     )
 
-    # Helper to convert Numpy HWC [0-1] to Tensor BCHW
     def to_tensor(img):
-        # Assumes float32 0-1 input
         t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
         return t.to(device)
 
     target_tensor = to_tensor(target_img)
     source_tensor_resized = to_tensor(source_img_resized)
 
-    with torch.no_grad():
-        result_tensor = wavelet_reconstruction(
-            target_tensor, source_tensor_resized, levels=levels
-        )
-        result_tensor = torch.clamp(result_tensor, 0, 1)
+    # Auto-Tiling Safety Loop
+    tile_size = max(target_w, target_h)
+    base_overlap = 64
+    
+    while True:
+        try:
+            if tile_size >= max(target_w, target_h):
+                # Try computing the full image in a single pass
+                with torch.no_grad():
+                    result_tensor = wavelet_reconstruction(
+                        target_tensor, source_tensor_resized, levels=levels
+                    )
+                    result_tensor = torch.clamp(result_tensor, 0, 1)
+                return result_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            
+            else:
+                # OOM triggered previously: Fallback to Tiled processing
+                print(f"Attempting wavelet fix with tile_size={tile_size}", flush=True)
+                b, c, h, w = target_tensor.shape
+                
+                # Setup accumulators on CPU to avoid overloading VRAM further
+                out_tensor = torch.zeros_like(target_tensor, device='cpu')
+                weight_sum = torch.zeros_like(target_tensor, device='cpu')
+                
+                overlap = min(base_overlap, tile_size // 4)
+                stride = tile_size - overlap
+                
+                for y in range(0, h, stride):
+                    for x in range(0, w, stride):
+                        y1 = max(0, y)
+                        y2 = min(h, y + tile_size)
+                        x1 = max(0, x)
+                        x2 = min(w, x + tile_size)
+                        
+                        target_tile = target_tensor[:, :, y1:y2, x1:x2]
+                        source_tile = source_tensor_resized[:, :, y1:y2, x1:x2]
+                        
+                        with torch.no_grad():
+                            res_tile = wavelet_reconstruction(target_tile, source_tile, levels=levels)
+                            res_tile = torch.clamp(res_tile, 0, 1).cpu()
+                        
+                        th, tw = y2 - y1, x2 - x1
+                        window = torch.ones((1, 1, th, tw), device='cpu')
+                        
+                        # Calculate exact dynamic overlaps handling image boundaries
+                        actual_overlap_top = min(overlap, th // 2) if y1 > 0 else 0
+                        actual_overlap_bottom = min(overlap, th // 2) if y2 < h else 0
+                        actual_overlap_left = min(overlap, tw // 2) if x1 > 0 else 0
+                        actual_overlap_right = min(overlap, tw // 2) if x2 < w else 0
 
-    # Convert back to Numpy HWC
-    result_img = result_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    return result_img
+                        # Apply linear fades for seamless tiling
+                        if actual_overlap_top > 0:
+                            window[:, :, :actual_overlap_top, :] *= torch.linspace(0, 1, actual_overlap_top).view(1, 1, -1, 1)
+                        if actual_overlap_bottom > 0:
+                            window[:, :, -actual_overlap_bottom:, :] *= torch.linspace(1, 0, actual_overlap_bottom).view(1, 1, -1, 1)
+                        if actual_overlap_left > 0:
+                            window[:, :, :, :actual_overlap_left] *= torch.linspace(0, 1, actual_overlap_left).view(1, 1, 1, -1)
+                        if actual_overlap_right > 0:
+                            window[:, :, :, -actual_overlap_right:] *= torch.linspace(1, 0, actual_overlap_right).view(1, 1, 1, -1)
+                            
+                        out_tensor[:, :, y1:y2, x1:x2] += res_tile * window
+                        weight_sum[:, :, y1:y2, x1:x2] += window
+                        
+                # Merge tiles and normalize weights
+                out_tensor = out_tensor / (weight_sum + 1e-8)
+                out_tensor = torch.clamp(out_tensor, 0, 1)
+                
+                return out_tensor.squeeze(0).permute(1, 2, 0).numpy()
+                
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "oom" in str(e).lower():
+                torch.cuda.empty_cache()
+                # Halve the tile size dynamically
+                if tile_size >= max(target_w, target_h):
+                    tile_size = 2048
+                    if tile_size >= max(target_w, target_h):
+                        tile_size = 1024
+                else:
+                    tile_size //= 2
+                    
+                if tile_size < 256:
+                    raise RuntimeError("Wavelet fix failed due to OOM even with minimum tile size (256).") from e
+                    
+                print(f"OOM during wavelet fix. Falling back to seamless tiles (tile_size={tile_size})...", flush=True)
+            else:
+                raise e
 
 # --- WAVELET COLOR FIX FUNCTIONS END ---
 
