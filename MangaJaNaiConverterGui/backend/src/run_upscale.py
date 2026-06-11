@@ -303,12 +303,12 @@ def apply_wavelet_color_fix(
         source_img, (target_w, target_h), ResizeFilter.Box, False
     )
 
-    def to_tensor(img):
-        t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
-        return t.to(device)
+    def to_tensor_cpu(img):
+        # Keep the base tensor on the CPU initially to avoid instant VRAM OOM
+        return torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
 
-    target_tensor = to_tensor(target_img)
-    source_tensor_resized = to_tensor(source_img_resized)
+    target_tensor = to_tensor_cpu(target_img)
+    source_tensor_resized = to_tensor_cpu(source_img_resized)
 
     # Auto-Tiling Safety Loop
     tile_size = max(target_w, target_h)
@@ -319,8 +319,12 @@ def apply_wavelet_color_fix(
             if tile_size >= max(target_w, target_h):
                 # Try computing the full image in a single pass
                 with torch.no_grad():
+                    # Move entire tensors to device only inside the try block
+                    t_dev = target_tensor.to(device)
+                    s_dev = source_tensor_resized.to(device)
+                    
                     result_tensor = wavelet_reconstruction(
-                        target_tensor, source_tensor_resized, levels=levels
+                        t_dev, s_dev, levels=levels
                     )
                     result_tensor = torch.clamp(result_tensor, 0, 1)
                 return result_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -344,8 +348,9 @@ def apply_wavelet_color_fix(
                         x1 = max(0, x)
                         x2 = min(w, x + tile_size)
                         
-                        target_tile = target_tensor[:, :, y1:y2, x1:x2]
-                        source_tile = source_tensor_resized[:, :, y1:y2, x1:x2]
+                        # Move only the current tile to the target device
+                        target_tile = target_tensor[:, :, y1:y2, x1:x2].to(device)
+                        source_tile = source_tensor_resized[:, :, y1:y2, x1:x2].to(device)
                         
                         with torch.no_grad():
                             res_tile = wavelet_reconstruction(target_tile, source_tile, levels=levels)
