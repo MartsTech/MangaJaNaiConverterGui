@@ -1149,7 +1149,7 @@ def preprocess_worker_archive_file(
     if "(webtoon-scunet)" in archive_stem.lower():
         is_webtoon = False
     else:
-        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', archive_stem))
+        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', archive_stem))
     
     image_namelist = [f for f in namelist if f.lower().endswith(IMAGE_EXTENSIONS)]
     image_namelist.sort(key=natural_sort_key)
@@ -1492,7 +1492,7 @@ def preprocess_worker_folder(
                         else:
                             d_post = 1
 
-                        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', input_file_base)) and "(webtoon-scunet)" not in input_file_base.lower()
+                        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', input_file_base)) and "(webtoon-scunet)" not in input_file_base.lower()
                         unpadded_h = 0
                         
                         if not is_webtoon:
@@ -1746,7 +1746,7 @@ def preprocess_worker_image(
             else:
                 d_post = 1
 
-            is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', Path(input_image_path).stem)) and "(webtoon-scunet)" not in Path(input_image_path).stem.lower()
+            is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', Path(input_image_path).stem)) and "(webtoon-scunet)" not in Path(input_image_path).stem.lower()
             unpadded_h = 0
             
             if not is_webtoon:
@@ -1976,7 +1976,7 @@ def postprocess_worker_zip(
     """
     wait for postprocess queue, for each queue entry, save the image to the zip file
     """
-    is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', Path(output_zip_path).stem)) and "(webtoon-scunet)" not in Path(output_zip_path).stem.lower()
+    is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', Path(output_zip_path).stem)) and "(webtoon-scunet)" not in Path(output_zip_path).stem.lower()
 
     def get_new_filename(base_name: str, index: int) -> str:
         parts = re.split(r'(-| )', base_name)
@@ -2122,7 +2122,7 @@ def postprocess_worker_folder(
         if not is_image:
             continue
 
-        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', str(file_name_rel))) and "(webtoon-scunet)" not in str(file_name_rel).lower()
+        is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', str(file_name_rel))) and "(webtoon-scunet)" not in str(file_name_rel).lower()
 
         # image = postprocess_image(image)
         image = to_uint8(image, normalized=True)
@@ -2198,7 +2198,7 @@ def postprocess_worker_image(
     """
     wait for postprocess queue, for each queue entry, save the image to the output file path
     """
-    is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet)\)', Path(output_file_path).stem)) and "(webtoon-scunet)" not in Path(output_file_path).stem.lower()
+    is_webtoon = bool(re.search(r'(?i)\((webtoon[1-4]?|scunet[1-4])\)', Path(output_file_path).stem)) and "(webtoon-scunet)" not in Path(output_file_path).stem.lower()
     
     while True:
         data = postprocess_queue.get()
