@@ -11,8 +11,8 @@ from .tile_info import TileInfo
 
 
 # TODO test performance
-cp.cuda.set_allocator(None)
-cp.cuda.set_pinned_memory_allocator(None)
+# cp.cuda.set_allocator(None)
+# cp.cuda.set_pinned_memory_allocator(None)
 
 
 def onnx_conv_info(onnx_path: str):

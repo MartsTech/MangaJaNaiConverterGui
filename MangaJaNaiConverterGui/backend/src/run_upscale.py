@@ -726,6 +726,9 @@ def ai_upscale_image(
 ) -> np.ndarray:
     if model is not None:
         if TensorRTUpscaler is not None and isinstance(model, TensorRTUpscaler):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
             if image.dtype != np.uint8:
                 image = (image * 255.0).clip(0, 255).astype(np.uint8)
 
